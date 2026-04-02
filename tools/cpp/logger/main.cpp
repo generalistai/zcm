@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <time.h>
 #include <getopt.h>
+#include <sys/socket.h>
 
 #include "zcm/zcm-cpp.hpp"
 #include "zcm/util/debug.h"
@@ -34,6 +35,101 @@ using namespace std;
 
 static atomic_int done {0};
 static atomic_int got_sighup {0};
+
+namespace
+{
+constexpr char CONTROL_MAGIC[] = {'L', 'G', 'C', 'P'};
+constexpr char CONTROL_REQUEST_CHANNEL[] = "logger_control_v1";
+constexpr char BARRIER_MARKER_CHANNEL[] = "logger_cycle_barrier_v1";
+constexpr uint16_t CONTROL_VERSION = 1;
+constexpr uint16_t MSG_READY = 1;
+constexpr uint16_t MSG_CYCLE_REQUEST = 2;
+constexpr uint16_t MSG_CYCLE_COMPLETE = 3;
+constexpr uint16_t MSG_CYCLE_ERROR = 4;
+constexpr uint32_t ERR_BUSY_WITH_OTHER_CYCLE = 1;
+constexpr uint32_t ERR_ROTATE_CLOSE_FAILED = 2;
+constexpr uint32_t ERR_ROTATE_OPEN_FAILED = 3;
+constexpr uint32_t ERR_CONTROL_PROTOCOL_INTERNAL = 4;
+constexpr int64_t INTERNAL_BARRIER_EVENTNUM = -1;
+constexpr size_t CONTROL_HEADER_SIZE = 12;
+constexpr size_t READY_FRAME_SIZE = CONTROL_HEADER_SIZE + 8;
+constexpr size_t CYCLE_REQUEST_FRAME_SIZE = CONTROL_HEADER_SIZE + 8 + 8 + 8 + 8;
+
+struct CycleRequestFrame
+{
+    uint64_t control_session_id = 0;
+    uint64_t cycle_seq = 0;
+    int64_t cycle_reason = 0;
+    int64_t request_robot_time_us = 0;
+};
+
+void append_u16_be(vector<uint8_t>& frame, uint16_t value)
+{
+    frame.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    frame.push_back(static_cast<uint8_t>(value & 0xff));
+}
+
+void append_u32_be(vector<uint8_t>& frame, uint32_t value)
+{
+    frame.push_back(static_cast<uint8_t>((value >> 24) & 0xff));
+    frame.push_back(static_cast<uint8_t>((value >> 16) & 0xff));
+    frame.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    frame.push_back(static_cast<uint8_t>(value & 0xff));
+}
+
+void append_u64_be(vector<uint8_t>& frame, uint64_t value)
+{
+    for (int shift = 56; shift >= 0; shift -= 8)
+        frame.push_back(static_cast<uint8_t>((value >> shift) & 0xff));
+}
+
+uint16_t read_u16_be(const uint8_t* data)
+{
+    return (static_cast<uint16_t>(data[0]) << 8) |
+           static_cast<uint16_t>(data[1]);
+}
+
+uint32_t read_u32_be(const uint8_t* data)
+{
+    return (static_cast<uint32_t>(data[0]) << 24) |
+           (static_cast<uint32_t>(data[1]) << 16) |
+           (static_cast<uint32_t>(data[2]) << 8) |
+           static_cast<uint32_t>(data[3]);
+}
+
+uint64_t read_u64_be(const uint8_t* data)
+{
+    uint64_t value = 0;
+    for (int i = 0; i < 8; ++i)
+        value = (value << 8) | static_cast<uint64_t>(data[i]);
+    return value;
+}
+
+int64_t read_i64_be(const uint8_t* data)
+{
+    return static_cast<int64_t>(read_u64_be(data));
+}
+
+bool parseCycleRequestFrame(const uint8_t* data, size_t size, CycleRequestFrame* out)
+{
+    if (size != CYCLE_REQUEST_FRAME_SIZE)
+        return false;
+    if (memcmp(data, CONTROL_MAGIC, sizeof(CONTROL_MAGIC)) != 0)
+        return false;
+    if (read_u16_be(data + 4) != CONTROL_VERSION)
+        return false;
+    if (read_u16_be(data + 6) != MSG_CYCLE_REQUEST)
+        return false;
+    if (read_u32_be(data + 8) != size)
+        return false;
+
+    out->control_session_id = read_u64_be(data + CONTROL_HEADER_SIZE);
+    out->cycle_seq = read_u64_be(data + CONTROL_HEADER_SIZE + 8);
+    out->cycle_reason = read_i64_be(data + CONTROL_HEADER_SIZE + 16);
+    out->request_robot_time_us = read_i64_be(data + CONTROL_HEADER_SIZE + 24);
+    return true;
+}
+}
 
 struct Args
 {
@@ -60,6 +156,9 @@ struct Args
     i64    max_target_memory  = 0;
     string plugin_path        = "";
     bool   debug              = false;
+    int    control_fd         = -1;
+    uint64_t control_session_id = 0;
+    bool   control_enabled    = false;
     map<string, string> channel_renames;
 
 
@@ -69,6 +168,10 @@ struct Args
     {
         // set some defaults
         const char *optstring = "hu:c:z:b:fir:s:ql:m:p:n:dR:";
+        enum LongOnlyOption {
+            CONTROL_FD = 1000,
+            CONTROL_SESSION_ID,
+        };
         struct option long_opts[] = {
             { "help",              no_argument,       0, 'h' },
             { "zcm-url",           required_argument, 0, 'u' },
@@ -86,6 +189,8 @@ struct Args
             { "name",              required_argument, 0, 'n' },
             { "debug",             no_argument,       0, 'd' },
             { "rename-channel",    required_argument, 0, 'R' },
+            { "control-fd",        required_argument, 0, CONTROL_FD },
+            { "control-session-id", required_argument, 0, CONTROL_SESSION_ID },
 
             { 0, 0, 0, 0 }
         };
@@ -114,6 +219,8 @@ struct Args
         };
 
         int nameInd = -1;
+        bool saw_control_fd = false;
+        bool saw_control_session_id = false;
 
         int c;
         while ((c = getopt_long (argc, argv, optstring, long_opts, 0)) >= 0) {
@@ -194,6 +301,26 @@ struct Args
                     }
                     channel_renames[old_name] = new_name;
                 } break;
+                case CONTROL_FD: {
+                    char* eptr = NULL;
+                    long parsed_value = strtol(optarg, &eptr, 10);
+                    if (*eptr || parsed_value < 0) {
+                        cerr << "Please specify a valid non-negative control fd" << endl;
+                        return false;
+                    }
+                    control_fd = static_cast<int>(parsed_value);
+                    saw_control_fd = true;
+                } break;
+                case CONTROL_SESSION_ID: {
+                    char* eptr = NULL;
+                    unsigned long long parsed_value = strtoull(optarg, &eptr, 10);
+                    if (*eptr) {
+                        cerr << "Please specify a valid control session id" << endl;
+                        return false;
+                    }
+                    control_session_id = static_cast<uint64_t>(parsed_value);
+                    saw_control_session_id = true;
+                } break;
 
                 case 'h': default: usage(); return false;
             };
@@ -233,6 +360,12 @@ struct Args
                  << "specify a log filename." << endl;
             return false;
         }
+
+        if (saw_control_fd != saw_control_session_id) {
+            cerr << "ERROR.  --control-fd and --control-session-id must be provided together." << endl;
+            return false;
+        }
+        control_enabled = saw_control_fd;
 
         return true;
     }
@@ -300,6 +433,8 @@ struct Args
              << "                             This is helpful for systems where replaying a log can cause" << endl
              << "                             problems during replay, like when using ZCM to launch processes" << endl
              << "                             with a program like Procman." << endl
+             << "      --control-fd=FD        Write machine-readable control replies to FD." << endl
+             << "      --control-session-id=N Identify the active control session for replies." << endl
              << endl
              << "Rotating / splitting log files" << endl
              << "==============================" << endl
@@ -363,6 +498,14 @@ struct Logger
     condition_variable newEventCond;
 
     queue<zcm::LogEvent*> q;
+    bool pending_cycle_valid = false;
+    uint64_t pending_cycle_session_id = 0;
+    uint64_t pending_cycle_seq = 0;
+    bool completed_cycle_valid = false;
+    uint64_t completed_cycle_session_id = 0;
+    uint64_t completed_cycle_seq = 0;
+    string completed_cycle_old_file;
+    string completed_cycle_new_file;
 
     TranscoderPluginDb* pluginDb = nullptr;
 
@@ -396,6 +539,9 @@ struct Logger
         if (!openLogfile())
             return false;
 
+        if (!sendReady())
+            return false;
+
         shard_plugins.resize(args.shards.size());
 
         // Load plugins from path if specified
@@ -425,6 +571,155 @@ struct Logger
         if (args.debug) return true;
 
         return true;
+    }
+
+    bool sendControlFrame(const vector<uint8_t>& frame)
+    {
+        if (!args.control_enabled)
+            return true;
+
+        ssize_t bytes_sent = send(args.control_fd, frame.data(), frame.size(), MSG_NOSIGNAL);
+        if (bytes_sent < 0) {
+            perror("Error sending control frame");
+            return false;
+        }
+        if (static_cast<size_t>(bytes_sent) != frame.size()) {
+            cerr << "Error sending control frame: partial packet write" << endl;
+            return false;
+        }
+        return true;
+    }
+
+    bool sendReady()
+    {
+        if (!args.control_enabled)
+            return true;
+
+        vector<uint8_t> frame;
+        frame.reserve(READY_FRAME_SIZE);
+        frame.insert(frame.end(), begin(CONTROL_MAGIC), end(CONTROL_MAGIC));
+        append_u16_be(frame, CONTROL_VERSION);
+        append_u16_be(frame, MSG_READY);
+        append_u32_be(frame, READY_FRAME_SIZE);
+        append_u64_be(frame, args.control_session_id);
+        return sendControlFrame(frame);
+    }
+
+    bool sendCycleComplete(
+        const CycleRequestFrame& request,
+        const string& old_file,
+        const string& new_file
+    )
+    {
+        vector<uint8_t> frame;
+        uint32_t old_file_len = static_cast<uint32_t>(old_file.size());
+        uint32_t new_file_len = static_cast<uint32_t>(new_file.size());
+        uint32_t total_size = CONTROL_HEADER_SIZE + 8 + 8 + 4 + 4 + old_file_len + new_file_len;
+        frame.reserve(total_size);
+        frame.insert(frame.end(), begin(CONTROL_MAGIC), end(CONTROL_MAGIC));
+        append_u16_be(frame, CONTROL_VERSION);
+        append_u16_be(frame, MSG_CYCLE_COMPLETE);
+        append_u32_be(frame, total_size);
+        append_u64_be(frame, request.control_session_id);
+        append_u64_be(frame, request.cycle_seq);
+        append_u32_be(frame, old_file_len);
+        append_u32_be(frame, new_file_len);
+        frame.insert(frame.end(), old_file.begin(), old_file.end());
+        frame.insert(frame.end(), new_file.begin(), new_file.end());
+        return sendControlFrame(frame);
+    }
+
+    bool sendCycleError(
+        uint64_t control_session_id,
+        uint64_t cycle_seq,
+        uint32_t error_code,
+        const string& message
+    )
+    {
+        vector<uint8_t> frame;
+        uint32_t message_len = static_cast<uint32_t>(message.size());
+        uint32_t total_size = CONTROL_HEADER_SIZE + 8 + 8 + 4 + 4 + message_len;
+        frame.reserve(total_size);
+        frame.insert(frame.end(), begin(CONTROL_MAGIC), end(CONTROL_MAGIC));
+        append_u16_be(frame, CONTROL_VERSION);
+        append_u16_be(frame, MSG_CYCLE_ERROR);
+        append_u32_be(frame, total_size);
+        append_u64_be(frame, control_session_id);
+        append_u64_be(frame, cycle_seq);
+        append_u32_be(frame, error_code);
+        append_u32_be(frame, message_len);
+        frame.insert(frame.end(), message.begin(), message.end());
+        return sendControlFrame(frame);
+    }
+
+    void handleCycleRequest(const zcm::ReceiveBuffer* rbuf)
+    {
+        CycleRequestFrame request;
+        if (!parseCycleRequestFrame(rbuf->data, rbuf->data_size, &request)) {
+            cerr << "Ignoring malformed logger control request" << endl;
+            return;
+        }
+        if (request.control_session_id != args.control_session_id) {
+            cerr << "Ignoring stale logger control request for session "
+                 << request.control_session_id << endl;
+            return;
+        }
+
+        bool resend_complete = false;
+        bool send_busy = false;
+        string completed_old_file;
+        string completed_new_file;
+        {
+            unique_lock<mutex> lock{lk};
+
+            if (pending_cycle_valid) {
+                if (pending_cycle_session_id == request.control_session_id &&
+                    pending_cycle_seq == request.cycle_seq) {
+                    return;
+                }
+                send_busy = true;
+            } else if (completed_cycle_valid &&
+                       completed_cycle_session_id == request.control_session_id &&
+                       completed_cycle_seq == request.cycle_seq) {
+                resend_complete = true;
+                completed_old_file = completed_cycle_old_file;
+                completed_new_file = completed_cycle_new_file;
+            } else {
+                zcm::LogEvent* barrier = new zcm::LogEvent;
+                barrier->eventnum = INTERNAL_BARRIER_EVENTNUM;
+                barrier->timestamp = rbuf->recv_utime;
+                barrier->channel = BARRIER_MARKER_CHANNEL;
+                barrier->datalen = rbuf->data_size;
+                barrier->data = new uint8_t[rbuf->data_size];
+                memcpy(barrier->data, rbuf->data, sizeof(uint8_t) * rbuf->data_size);
+                q.push(barrier);
+                totalMemoryUsage += barrier->datalen + barrier->channel.size() + sizeof(*barrier);
+                pending_cycle_valid = true;
+                pending_cycle_session_id = request.control_session_id;
+                pending_cycle_seq = request.cycle_seq;
+            }
+        }
+
+        if (resend_complete) {
+            if (!sendCycleComplete(request, completed_old_file, completed_new_file)) {
+                cerr << "Fatal error re-sending cycle completion" << endl;
+                exit(1);
+            }
+            return;
+        }
+        if (send_busy) {
+            if (!sendCycleError(
+                    request.control_session_id,
+                    request.cycle_seq,
+                    ERR_BUSY_WITH_OTHER_CYCLE,
+                    "logger busy with another cycle")) {
+                cerr << "Fatal error sending cycle busy reply" << endl;
+                exit(1);
+            }
+            return;
+        }
+
+        newEventCond.notify_all();
     }
 
     void rotate_logfiles()
@@ -510,9 +805,15 @@ struct Logger
     void handler(const zcm::ReceiveBuffer* rbuf,
                  const string& channel, size_t shardNum)
     {
+        if (channel == CONTROL_REQUEST_CHANNEL) {
+            handleCycleRequest(rbuf);
+            return;
+        }
+
         vector<zcm::LogEvent*> evts;
 
         zcm::LogEvent* le = new zcm::LogEvent;
+        le->eventnum = 0;
         le->timestamp = rbuf->recv_utime;
         if (args.channel_renames.find(channel) != args.channel_renames.end()) {
             le->channel = args.channel_renames[channel];
@@ -597,6 +898,84 @@ struct Logger
             totalMemoryUsage -= (le->datalen + le->channel.size() + sizeof(*le));
         }
         if (qSize != 0) ZCM_DEBUG("Queue size = %zu\n", qSize);
+
+        bool is_internal_barrier =
+            le->eventnum == INTERNAL_BARRIER_EVENTNUM &&
+            le->channel == BARRIER_MARKER_CHANNEL;
+        if (is_internal_barrier) {
+            CycleRequestFrame request;
+            if (!parseCycleRequestFrame(le->data, le->datalen, &request)) {
+                sendCycleError(
+                    args.control_session_id,
+                    pending_cycle_seq,
+                    ERR_CONTROL_PROTOCOL_INTERNAL,
+                    "invalid internal barrier payload");
+                cerr << "Fatal error: invalid internal barrier payload" << endl;
+                exit(1);
+            }
+
+            if (log->writeEvent(le) != 0) {
+                static u64 last_spew_utime = 0;
+                string reason = strerror(errno);
+                u64 now = TimeUtil::utime();
+                if (now - last_spew_utime > 500000) {
+                    cerr << "zcm_eventlog_write_event: " << reason << endl;
+                    last_spew_utime = now;
+                }
+                sendCycleError(
+                    request.control_session_id,
+                    request.cycle_seq,
+                    ERR_CONTROL_PROTOCOL_INTERNAL,
+                    "failed to write cycle barrier marker");
+                if (errno == ENOSPC)
+                    exit(1);
+
+                delete[] le->data;
+                delete le;
+                return;
+            }
+
+            nevents++;
+            events_since_last_report++;
+            logsize += 4 + 8 + 8 + 4 + le->channel.size() + 4 + le->datalen;
+
+            string old_file = filename;
+            log->close();
+            if (args.rotate > 0)
+                rotate_logfiles();
+            if (!openLogfile()) {
+                sendCycleError(
+                    request.control_session_id,
+                    request.cycle_seq,
+                    ERR_ROTATE_OPEN_FAILED,
+                    "failed to open rotated log file");
+                cerr << "Fatal error: failed to open rotated log file" << endl;
+                exit(1);
+            }
+            string new_file = filename;
+
+            num_splits++;
+            logsize = 0;
+            last_report_logsize = 0;
+            last_fflush_time = 0;
+            {
+                unique_lock<mutex> lock{lk};
+                pending_cycle_valid = false;
+                completed_cycle_valid = true;
+                completed_cycle_session_id = request.control_session_id;
+                completed_cycle_seq = request.cycle_seq;
+                completed_cycle_old_file = old_file;
+                completed_cycle_new_file = new_file;
+            }
+            if (!sendCycleComplete(request, old_file, new_file)) {
+                cerr << "Fatal error sending cycle completion" << endl;
+                exit(1);
+            }
+
+            delete[] le->data;
+            delete le;
+            return;
+        }
 
         // Is it time to start a new logfile?
         if (args.auto_split_mb) {
