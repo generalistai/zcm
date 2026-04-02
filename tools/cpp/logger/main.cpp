@@ -41,6 +41,7 @@ namespace
 constexpr char CONTROL_MAGIC[] = {'L', 'G', 'C', 'P'};
 constexpr char CONTROL_REQUEST_CHANNEL[] = "logger_control_v1";
 constexpr char BARRIER_MARKER_CHANNEL[] = "logger_cycle_barrier_v1";
+constexpr char ORDERED_CYCLE_DEBUG_PREFIX[] = "[ordered-cycle][zcm-logger]";
 constexpr uint16_t CONTROL_VERSION = 1;
 constexpr uint16_t MSG_READY = 1;
 constexpr uint16_t MSG_CYCLE_REQUEST = 2;
@@ -539,6 +540,13 @@ struct Logger
         if (!openLogfile())
             return false;
 
+        if (args.control_enabled) {
+            cout << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " control enabled fd=" << args.control_fd
+                 << " session=" << args.control_session_id
+                 << " file=" << filename << endl;
+        }
+
         if (!sendReady())
             return false;
 
@@ -602,7 +610,13 @@ struct Logger
         append_u16_be(frame, MSG_READY);
         append_u32_be(frame, READY_FRAME_SIZE);
         append_u64_be(frame, args.control_session_id);
-        return sendControlFrame(frame);
+        bool sent = sendControlFrame(frame);
+        if (sent) {
+            cout << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " sent READY session=" << args.control_session_id
+                 << " file=" << filename << endl;
+        }
+        return sent;
     }
 
     bool sendCycleComplete(
@@ -626,7 +640,15 @@ struct Logger
         append_u32_be(frame, new_file_len);
         frame.insert(frame.end(), old_file.begin(), old_file.end());
         frame.insert(frame.end(), new_file.begin(), new_file.end());
-        return sendControlFrame(frame);
+        bool sent = sendControlFrame(frame);
+        if (sent) {
+            cout << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " sent CYCLE_COMPLETE session=" << request.control_session_id
+                 << " seq=" << request.cycle_seq
+                 << " old_file=" << old_file
+                 << " new_file=" << new_file << endl;
+        }
+        return sent;
     }
 
     bool sendCycleError(
@@ -636,6 +658,11 @@ struct Logger
         const string& message
     )
     {
+        cerr << ORDERED_CYCLE_DEBUG_PREFIX
+             << " sending CYCLE_ERROR session=" << control_session_id
+             << " seq=" << cycle_seq
+             << " code=" << error_code
+             << " message=" << message << endl;
         vector<uint8_t> frame;
         uint32_t message_len = static_cast<uint32_t>(message.size());
         uint32_t total_size = CONTROL_HEADER_SIZE + 8 + 8 + 4 + 4 + message_len;
@@ -656,28 +683,46 @@ struct Logger
     {
         CycleRequestFrame request;
         if (!parseCycleRequestFrame(rbuf->data, rbuf->data_size, &request)) {
-            cerr << "Ignoring malformed logger control request" << endl;
+            cerr << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " ignoring malformed CYCLE_REQUEST" << endl;
             return;
         }
         if (request.control_session_id != args.control_session_id) {
-            cerr << "Ignoring stale logger control request for session "
+            cerr << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " ignoring stale CYCLE_REQUEST for session "
                  << request.control_session_id << endl;
             return;
         }
+
+        cout << ORDERED_CYCLE_DEBUG_PREFIX
+             << " received CYCLE_REQUEST session=" << request.control_session_id
+             << " seq=" << request.cycle_seq
+             << " reason=" << request.cycle_reason
+             << " request_robot_time_us=" << request.request_robot_time_us
+             << " recv_utime=" << rbuf->recv_utime << endl;
 
         bool resend_complete = false;
         bool send_busy = false;
         string completed_old_file;
         string completed_new_file;
+        uint64_t busy_pending_session_id = 0;
+        uint64_t busy_pending_seq = 0;
+        size_t queue_size_after_enqueue = 0;
         {
             unique_lock<mutex> lock{lk};
 
             if (pending_cycle_valid) {
                 if (pending_cycle_session_id == request.control_session_id &&
                     pending_cycle_seq == request.cycle_seq) {
+                    cout << ORDERED_CYCLE_DEBUG_PREFIX
+                         << " duplicate in-flight CYCLE_REQUEST ignored session="
+                         << request.control_session_id
+                         << " seq=" << request.cycle_seq << endl;
                     return;
                 }
                 send_busy = true;
+                busy_pending_session_id = pending_cycle_session_id;
+                busy_pending_seq = pending_cycle_seq;
             } else if (completed_cycle_valid &&
                        completed_cycle_session_id == request.control_session_id &&
                        completed_cycle_seq == request.cycle_seq) {
@@ -697,10 +742,17 @@ struct Logger
                 pending_cycle_valid = true;
                 pending_cycle_session_id = request.control_session_id;
                 pending_cycle_seq = request.cycle_seq;
+                queue_size_after_enqueue = q.size();
             }
         }
 
         if (resend_complete) {
+            cout << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " duplicate completed CYCLE_REQUEST; re-sending completion session="
+                 << request.control_session_id
+                 << " seq=" << request.cycle_seq
+                 << " old_file=" << completed_old_file
+                 << " new_file=" << completed_new_file << endl;
             if (!sendCycleComplete(request, completed_old_file, completed_new_file)) {
                 cerr << "Fatal error re-sending cycle completion" << endl;
                 exit(1);
@@ -708,6 +760,12 @@ struct Logger
             return;
         }
         if (send_busy) {
+            cout << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " rejecting CYCLE_REQUEST because another cycle is pending "
+                 << "active_session=" << busy_pending_session_id
+                 << " active_seq=" << busy_pending_seq
+                 << " requested_session=" << request.control_session_id
+                 << " requested_seq=" << request.cycle_seq << endl;
             if (!sendCycleError(
                     request.control_session_id,
                     request.cycle_seq,
@@ -718,6 +776,11 @@ struct Logger
             }
             return;
         }
+
+        cout << ORDERED_CYCLE_DEBUG_PREFIX
+             << " enqueued barrier marker session=" << request.control_session_id
+             << " seq=" << request.cycle_seq
+             << " queue_size=" << queue_size_after_enqueue << endl;
 
         newEventCond.notify_all();
     }
@@ -914,6 +977,12 @@ struct Logger
                 exit(1);
             }
 
+            cout << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " processing barrier marker session=" << request.control_session_id
+                 << " seq=" << request.cycle_seq
+                 << " current_file=" << filename
+                 << " queue_remaining=" << qSize << endl;
+
             if (log->writeEvent(le) != 0) {
                 static u64 last_spew_utime = 0;
                 string reason = strerror(errno);
@@ -935,6 +1004,12 @@ struct Logger
                 return;
             }
 
+            cout << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " wrote barrier marker to old log chunk session="
+                 << request.control_session_id
+                 << " seq=" << request.cycle_seq
+                 << " file=" << filename << endl;
+
             nevents++;
             events_since_last_report++;
             logsize += 4 + 8 + 8 + 4 + le->channel.size() + 4 + le->datalen;
@@ -953,6 +1028,12 @@ struct Logger
                 exit(1);
             }
             string new_file = filename;
+
+            cout << ORDERED_CYCLE_DEBUG_PREFIX
+                 << " rotated log after barrier session=" << request.control_session_id
+                 << " seq=" << request.cycle_seq
+                 << " old_file=" << old_file
+                 << " new_file=" << new_file << endl;
 
             num_splits++;
             logsize = 0;
