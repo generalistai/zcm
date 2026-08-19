@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 /* Important hardcoded values */
-#define ZCM_CHANNEL_MAXLEN 32
+#define ZCM_CHANNEL_MAXLEN 72
 enum zcm_type {
     ZCM_BLOCKING,
     ZCM_NONBLOCKING

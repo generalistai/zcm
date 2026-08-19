@@ -8,10 +8,22 @@ import java.nio.*;
 /** Zero Communications and Marshalling Java implementation **/
 public class ZCM
 {
+    /** Must match ZCM_CHANNEL_MAXLEN in zcm/zcm.h **/
+    public static final int CHANNEL_MAXLEN = 72;
+
     public class Subscription
     {
         Object nativeSub;
         ZCMSubscriber javaSub;
+    }
+
+    private static void checkChannelLength(String channel)
+    {
+        int len = channel.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (len > CHANNEL_MAXLEN)
+            throw new IllegalArgumentException(
+                "ZCM channel name \"" + channel + "\" is too long (" +
+                len + " bytes, max is " + CHANNEL_MAXLEN + ")");
     }
 
     boolean closed = false;
@@ -93,12 +105,14 @@ public class ZCM
         throws IOException
     {
         if (this.closed) throw new IllegalStateException();
+        checkChannelLength(channel);
         zcmjni.publish(channel, data, offset, length);
     }
 
     public Subscription subscribe(String channel, ZCMSubscriber sub)
     {
         if (this.closed) throw new IllegalStateException();
+        checkChannelLength(channel);
 
         Subscription subs = new Subscription();
         subs.javaSub = sub;
