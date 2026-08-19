@@ -7,7 +7,8 @@ export encode,
        fieldnames,
        constfieldnames
 # Zcm functions
-export Zcm,
+export CHANNEL_MAXLEN,
+       Zcm,
        good,
        strerrno,
        subscribe,
@@ -40,6 +41,17 @@ import Base: flush,
 end
 
 abstract type AbstractZcmType end
+
+# Must match ZCM_CHANNEL_MAXLEN in zcm/zcm.h
+const CHANNEL_MAXLEN = 72
+
+function check_channel_length(channel::AbstractString)
+    len = sizeof(convert(String, channel))
+    if len > CHANNEL_MAXLEN
+        throw(ArgumentError("ZCM channel name \"$channel\" is too long " *
+                            "($len bytes, max is $CHANNEL_MAXLEN)"))
+    end
+end
 
 @static if VERSION < v"0.7.0-"
     Nothing = Void
@@ -200,6 +212,7 @@ function subscribe(zcm::Zcm, channel::AbstractString,
                    handler,
                    msgtype=Nothing,
                    additional_args...)
+    check_channel_length(channel)
     callback = typed_handler(handler, msgtype, additional_args...)
     c_handler = sub_handler(typeof(callback))
     uv_wrapper = ccall(("uv_zcm_msg_handler_create", "libzcmjulia"),
@@ -243,6 +256,7 @@ function unsubscribe(zcm::Zcm, sub::Subscription)
 end
 
 function publish(zcm::Zcm, channel::AbstractString, data::Vector{UInt8})
+    check_channel_length(channel)
     ccall(("zcm_publish", "libzcm"), Cint,
           (Ptr{Native.Zcm}, Cstring, Ptr{Nothing}, UInt32),
           zcm, convert(String, channel), data, length(data))

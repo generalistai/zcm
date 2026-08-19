@@ -9,6 +9,7 @@ cdef extern from "zcm/python/zcm-python.h":
     void PyEval_InitThreads_CUSTOM()
 
 cdef extern from "zcm/zcm.h":
+    enum: ZCM_CHANNEL_MAXLEN
     cpdef enum zcm_return_codes:
         ZCM_EOK,
         ZCM_EINVALID,
@@ -77,6 +78,15 @@ cdef extern from "zcm/zcm.h":
     int                   zcm_eventlog_write_event(zcm_eventlog_t* eventlog, \
                                                    const zcm_eventlog_event_t* event)
 
+CHANNEL_MAXLEN = ZCM_CHANNEL_MAXLEN
+
+cdef bytes _encode_channel(str channel):
+    channel_bytes = channel.encode('utf-8')
+    if len(channel_bytes) > ZCM_CHANNEL_MAXLEN:
+        raise ValueError("ZCM channel name '%s' is too long (%d bytes, max is %d)"
+                         % (channel, len(channel_bytes), ZCM_CHANNEL_MAXLEN))
+    return channel_bytes
+
 cdef class ZCMSubscription:
     cdef zcm_sub_t* sub
     cdef object handler
@@ -120,25 +130,27 @@ cdef class ZCM:
     def strerrno(self, err):
         return zcm_strerrno(err).decode('utf-8')
     def subscribe_raw(self, str channel, handler):
+        cdef bytes channel_bytes = _encode_channel(channel)
         cdef ZCMSubscription subs = ZCMSubscription()
         subs.handler = handler
         subs.msgtype = None
         sig = signature(handler)
         selected_handler_cb = handler_cb_raw_deprecated if len(sig.parameters) == 2 else handler_cb_raw
         while True:
-            subs.sub = zcm_try_subscribe(self.zcm, channel.encode('utf-8'), selected_handler_cb, <void*> subs)
+            subs.sub = zcm_try_subscribe(self.zcm, channel_bytes, selected_handler_cb, <void*> subs)
             if subs.sub != NULL:
                 self.subscriptions.append(subs)
                 return subs
             time.sleep(0) # yield the gil
     def subscribe(self, str channel, msgtype, handler):
+        cdef bytes channel_bytes = _encode_channel(channel)
         cdef ZCMSubscription subs = ZCMSubscription()
         subs.handler = handler
         subs.msgtype = msgtype
         sig = signature(handler)
         selected_handler_cb = handler_cb_deprecated if len(sig.parameters) == 2 else handler_cb
         while True:
-            subs.sub = zcm_try_subscribe(self.zcm, channel.encode('utf-8'), selected_handler_cb, <void*> subs)
+            subs.sub = zcm_try_subscribe(self.zcm, channel_bytes, selected_handler_cb, <void*> subs)
             if subs.sub != NULL:
                 self.subscriptions.append(subs)
                 return subs
@@ -148,12 +160,14 @@ cdef class ZCM:
             time.sleep(0) # yield the gil
         self.subscriptions.remove(subs)
     def publish(self, str channel, object msg):
+        cdef bytes channel_bytes = _encode_channel(channel)
         _data = msg.encode()
         cdef const uint8_t* data = _data
-        return zcm_publish(self.zcm, channel.encode('utf-8'), data, len(_data) * sizeof(uint8_t))
+        return zcm_publish(self.zcm, channel_bytes, data, len(_data) * sizeof(uint8_t))
     def publish_raw(self, str channel, bytes data):
+        cdef bytes channel_bytes = _encode_channel(channel)
         cdef const uint8_t* _data = data
-        return zcm_publish(self.zcm, channel.encode('utf-8'), _data, len(data) * sizeof(uint8_t))
+        return zcm_publish(self.zcm, channel_bytes, _data, len(data) * sizeof(uint8_t))
     def flush(self):
         while zcm_try_flush(self.zcm) != ZCM_EOK:
             time.sleep(0) # yield the gil
