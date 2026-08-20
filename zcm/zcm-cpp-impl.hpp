@@ -38,6 +38,17 @@ class Subscription
 static inline void SubscriptionDispatch(const ReceiveBuffer* rbuf, const char* channel, void* usr)
 { ((Subscription*)usr)->dispatch(rbuf, channel); }
 
+// Aborts unconditionally (even in release/NDEBUG builds) on an oversized channel name
+static inline void zcmCheckChannelLength(const std::string& channel)
+{
+    if (channel.size() <= ZCM_CHANNEL_MAXLEN) return;
+    #ifndef ZCM_EMBEDDED
+    fprintf(stderr, "ZCM Error: channel name \"%s\" is too long (%d chars, max is %d)\n",
+            channel.c_str(), (int)channel.size(), ZCM_CHANNEL_MAXLEN);
+    #endif
+    abort();
+}
+
 #ifndef ZCM_EMBEDDED
 inline ZCM::ZCM()
 {
@@ -529,11 +540,17 @@ inline zcm_t* ZCM::getUnderlyingZCM()
 { return zcm; }
 
 inline int ZCM::publishRaw(const std::string& channel, const uint8_t* data, uint32_t len)
-{ return zcm_publish(zcm, channel.c_str(), data, len); }
+{
+    zcmCheckChannelLength(channel);
+    return zcm_publish(zcm, channel.c_str(), data, len);
+}
 
 inline void ZCM::subscribeRaw(void*& rawSub, const std::string& channel,
                               MsgHandler cb, void* usr)
-{ rawSub = zcm_subscribe(zcm, channel.c_str(), cb, usr); }
+{
+    zcmCheckChannelLength(channel);
+    rawSub = zcm_subscribe(zcm, channel.c_str(), cb, usr);
+}
 
 inline int ZCM::unsubscribeRaw(void*& rawSub)
 {
