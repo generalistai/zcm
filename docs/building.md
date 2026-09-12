@@ -24,7 +24,8 @@ modern linux systems.
 
  - All built-in transports: inclusion must be enabled pre-compile-time
  - ZeroMQ: used for the `ipc` and `inproc` transports
- - Java JNI: used for the Java language bindings and tools implemented in Java
+ - Java JDK (including JNI headers) and jchart2d: used for the Java language bindings
+   and tools implemented in Java (`--use-java`)
  - NodeJS and socket.io: used for client-side web applications. Note that Debian
    users should install the `nodejs-legacy` package in addition to the `nodejs`
    package because of the debian renaming of the "node" executable to "nodejs"
@@ -63,7 +64,26 @@ script using:
     ./scripts/install-deps.sh
 
 On other systems you may need to use your specific package manager to obtain the needed
-packages. It should be noted that JNI sometimes needs `$JAVA_HOME` to be manually set.
+packages.
+
+### Java dependencies
+
+On Debian/Ubuntu, install the Java dependencies with:
+
+    sudo apt install default-jdk libjchart2d-java
+    ./waf configure --use-java
+
+Configuration detects the JDK from `javac` on `PATH`; set `JAVA_HOME` only to select
+a custom JDK. It searches for jchart2d in `CLASSPATH`, the installation prefix's
+`share/java`, `/usr/local/share/java`, and `/usr/share/java`, accepting unversioned
+and versioned jar names. A missing or unusable dependency fails during configuration
+with installation guidance.
+
+For a jar installed elsewhere, use `--jchart2d-jar=/path/to/jchart2d.jar`.
+The detected jar is used to compile the Java tools and by the installed `zcm-spy`
+launcher; no `CLASSPATH` export is needed for jchart2d. Keep that jar available at
+the configured path when running `zcm-spy`.
+
 If you're still having issues building, check out our [FAQs](FAQs.md) for more info.
 If you still can't find the answer to your question, feel free to
 [reach out](https://discord.gg/T6jYM3eMjw)!

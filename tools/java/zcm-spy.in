@@ -1,4 +1,5 @@
 #!/bin/sh
 prefix=@prefix@
-jars=$prefix/share/java/zcm.jar:$prefix/share/java/zcm-tools.jar:/usr/share/java/jchart2d-3.2.2.jar
-exec java -server -Xmx128m -Xms64m -ea -cp $jars zcm.spy.Spy $*
+jchart2d=@JCHART2D_JAR_SHELL@
+jars=$prefix/share/java/zcm.jar:$prefix/share/java/zcm-tools.jar:$jchart2d
+exec java -server -Xmx128m -Xms64m -ea -cp "$jars" zcm.spy.Spy "$@"
