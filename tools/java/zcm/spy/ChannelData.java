@@ -19,7 +19,7 @@ public class ChannelData
     public double      bandwidth;     // bytes per second
 
     public JFrame      viewerFrame;
-    public ObjectPanel viewer;
+    public volatile ObjectPanel viewer;
 
     // below: used by HzThread
     public double      hz;

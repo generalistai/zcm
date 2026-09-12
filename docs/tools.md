@@ -14,6 +14,17 @@ using the `zcm-spy` tool. Note that you must have your types "compiled" into a
 java jar and that jar must be listed in your `CLASSPATH` for `zcm-spy` to be able
 to decode messages.
 
+Detailed charts capture every finite numeric sample received after the chart is opened,
+independently of inspector repaints, scrolling, or minimizing the inspector.
+The small sparklines show samples at the inspector's refresh rate. Detailed charts
+refresh in batches and retain the latest 15,000 samples per trace; older samples
+expire from this bounded history, including when the UI is busy. To change the
+history size, set the Java property `zcm.spy.chartSize`, for example:
+
+```
+JAVA_TOOL_OPTIONS=-Dzcm.spy.chartSize=50000 zcm-spy
+```
+
 ### Spy Lite
 ##### To mark for build: `$./waf configure --use-elf`
 

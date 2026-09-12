@@ -40,6 +40,12 @@ echo "**********************************"
 $ROOTDIR/build/$BLD/test/runner
 echo "Success"
 
+if [ -z "${1:-}" ]; then
+    echo
+    echo "Running Java spy chart tests"
+    "$THISDIR/java/run-spy-tests.sh"
+fi
+
 if [ $# -ne 0 ]; then
     echo "Skipping non c/c++ lanugage tests in sanitizer mode"
     exit 0

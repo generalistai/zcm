@@ -219,12 +219,6 @@ public class Spy
     void createViewer(ChannelData cd)
     {
 
-        if (cd.viewerFrame != null && !cd.viewerFrame.isVisible())
-        {
-            cd.viewerFrame.dispose();
-            cd.viewer = null;
-        }
-
         if (cd.viewer == null) {
             cd.viewerFrame = new JFrame(cd.name);
 

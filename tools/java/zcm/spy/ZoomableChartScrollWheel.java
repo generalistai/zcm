@@ -19,7 +19,6 @@ import info.monitorenter.gui.chart.ZoomableChart;
 import info.monitorenter.gui.chart.axis.AAxis;
 import info.monitorenter.gui.chart.axis.AxisLinear;
 import info.monitorenter.gui.chart.labelformatters.LabelFormatterNumber;
-import info.monitorenter.gui.chart.traces.Trace2DLtd;
 import javax.swing.*;
 
 /**
@@ -90,6 +89,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     public static void newChartFrame(final ChartData chartData, final ITrace2D trace)
     {
         JFrame frame = new JFrame(trace.getName());
+        frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         
         final ZoomableChartScrollWheel newChart = new ZoomableChartScrollWheel(chartData);
         
@@ -107,13 +107,15 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         
         frame.addWindowListener(new WindowAdapter()
         {
-            public void windowClosing(WindowEvent e)
+            public void windowClosed(WindowEvent e)
             {
-                for (ITrace2D trace : newChart.getTraces())
+                for (ITrace2D trace : new ArrayList<ITrace2D>(newChart.getTraces()))
                 {
-                    ((Trace2DLtd)trace).setMaxSize(chartData.sparklineChartSize);
+                    chartData.stopTrace(trace);
+                    newChart.removeTrace(trace);
                 }
                 chartData.getCharts().remove(newChart);
+                newChart.destroy();
             }
         });
         
@@ -279,6 +281,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
                     }
                     
                     ZoomableChartScrollWheel.this.removeTrace(trace);
+                    chartData.stopTrace(trace);
                     ZoomableChartScrollWheel.this.updateRightClickMenu();
                 }
             });

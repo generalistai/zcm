@@ -7,6 +7,7 @@ import java.awt.event.*;
 import java.util.*;
 import java.util.Map.Entry;
 import java.lang.reflect.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import info.monitorenter.gui.chart.Chart2D;
 import info.monitorenter.gui.chart.ITrace2D;
@@ -28,9 +29,76 @@ public class ObjectPanel extends JPanel
     int lastwidth = 500;
     int lastheight = 100;
     JViewport scrollViewport;
-    long lastDrawTimestamp = 0;
+    private final AtomicBoolean repaintPending = new AtomicBoolean();
+    private final javax.swing.Timer repaintTimer = new javax.swing.Timer(16, new ActionListener() {
+        public void actionPerformed(ActionEvent e)
+        {
+            repaintPending.set(false);
+            repaint();
+        }
+    });
 
-    int MAX_FPS = 60;
+    private static class Message
+    {
+        final Object object;
+        final long utime;
+        final long sequence;
+
+        Message(Object object, long utime, long sequence)
+        {
+            this.object = object;
+            this.utime = utime;
+            this.sequence = sequence;
+        }
+    }
+
+    private volatile Message latestMessage;
+    private Message paintedMessage;
+
+    // Receive-thread work is proportional to the selected fields and their
+    // nesting depth, rather than the size of the entire message.
+    private static class Subscription
+    {
+        final Object[] path;
+        final StreamingTrace trace;
+
+        Subscription(Object[] path, StreamingTrace trace)
+        {
+            this.path = path;
+            this.trace = trace;
+        }
+
+        void record(Message message)
+        {
+            Object value = message.object;
+            try {
+                for (Object step : path) {
+                    if (value == null)
+                        return;
+                    if (step instanceof Field) {
+                        Field field = (Field) step;
+                        if (!field.getDeclaringClass().isInstance(value))
+                            return;
+                        value = field.get(value);
+                    } else {
+                        int index = (Integer) step;
+                        if (index >= Array.getLength(value))
+                            return;
+                        value = Array.get(value, index);
+                    }
+                }
+                if (value instanceof Number)
+                    trace.record(message.utime / 1000000.0, ((Number) value).doubleValue());
+            } catch (IllegalAccessException ex) {
+                throw new IllegalStateException("Cannot read chart field", ex);
+            }
+        }
+    }
+
+    private final ArrayList<Subscription> subscriptions = new ArrayList<Subscription>();
+    private final HashMap<String, SparklineData> sparklinesByPath =
+            new HashMap<String, SparklineData>();
+    private final HashMap<Class, Field[]> fieldsByClass = new HashMap<Class, Field[]>();
 
     final int sparklineWidth = 150; // width in pixels of all sparklines
 
@@ -43,14 +111,14 @@ public class ObjectPanel extends JPanel
 
     ChartData chartData; // global data about all charts being displayed by zcm-spy
 
+    // jchart2d requires a renderer for point creation and synchronization. The
+    // manually painted sparklines share one instead of creating a chart and
+    // a repeating Swing timer for every numeric field. They need no axis listeners.
+    final Chart2D sparklineRenderer = new Chart2D();
+
     // array of all sparklines that are visible
     // or near visible to the user right now
-    ArrayList<SparklineData> visibleSparklines = new ArrayList<SparklineData>();
-
-    boolean visibleSparklinesInitialized = false;
-
-    // array of all sparklines being graphed
-    ArrayList<SparklineData> graphingSparklines = new ArrayList<SparklineData>();
+    HashSet<SparklineData> visibleSparklines = new HashSet<SparklineData>();
 
     // we keep track of each drawing iteration to know if the row we clicked
     // on was displayed.  See SparklineData.lastDrawNumber.
@@ -79,10 +147,14 @@ public class ObjectPanel extends JPanel
         int ymin, ymax;
         boolean isHovering;
 
-        // all sparklines have a chart associated with them, even though
-        // we do not use it for display. This allows us to use the data-collection
-        // and management features
-        Chart2D chart;
+        Trace2DLtd trace;
+
+        // The detailed trace has its own full-rate history. The sparkline
+        // remains sampled at the inspector's frame rate.
+        StreamingTrace detailedTrace;
+        Object[] path;
+        String fullName;
+        long lastSequence = -1;
 
         String name;
         Section section;
@@ -109,6 +181,7 @@ public class ObjectPanel extends JPanel
         this.name = name;
         this.setLayout(null); // not using a layout manager, drawing everything ourselves
         this.chartData = chartData;
+        repaintTimer.setRepeats(false);
 
         addMouseListener(new MyMouseAdapter());
 
@@ -119,10 +192,13 @@ public class ObjectPanel extends JPanel
     }
 
     public void repaintWithFramelimit() {
-        long now = System.currentTimeMillis();
-        if (now - lastDrawTimestamp > 1000/MAX_FPS) {
-            lastDrawTimestamp = now;
-            repaint();
+        if (repaintPending.compareAndSet(false, true)) {
+            SwingUtilities.invokeLater(new Runnable() {
+                public void run()
+                {
+                    repaintTimer.start();
+                }
+            });
         }
     }
 
@@ -165,19 +241,16 @@ public class ObjectPanel extends JPanel
                 if (e.getButton() == MouseEvent.BUTTON1)
                 {
                     displayDetailedChart(data, false, false);
-                    graphingSparklines.add(data);
 
                 } else if (e.getButton() == MouseEvent.BUTTON2)
                 {
                     // middle click means open a new chart
                     displayDetailedChart(data, true, true);
-                    graphingSparklines.add(data);
 
                 } else if (e.getButton() == MouseEvent.BUTTON3)
                 {
                     // right click means same chart, new axis
                     displayDetailedChart(data, false, true);
-                    graphingSparklines.add(data);
                 }
 
                 return true;
@@ -200,7 +273,7 @@ public class ObjectPanel extends JPanel
     public void displayDetailedChart(SparklineData data, boolean openNewChart, boolean newAxis)
     {
 
-        if (data.chart == null)
+        if (data.trace == null)
         {
             // this should not happen, but catch it if it does because we can at least safely ignore it
             System.out.println("Warning: detailed chart display requested on uninitialized chart " + data.name);
@@ -208,21 +281,21 @@ public class ObjectPanel extends JPanel
         }
 
         // check to see if we are already displaying this trace
-        Trace2DLtd trace = (Trace2DLtd) data.chart.getTraces().first();
+        StreamingTrace trace = data.detailedTrace;
 
         for (ZoomableChartScrollWheel chart : chartData.getCharts())
         {
-            if (chart.getTraces().contains(trace))
+            if (trace != null && chart.getTraces().contains(trace))
             {
                 chart.toFront();
                 return;
             }
         }
 
+        trace = createDetailedTrace(data);
 
         if (openNewChart || chartData.getCharts().size() < 1)
         {
-            trace.setMaxSize(chartData.detailedSparklineChartSize);
             ZoomableChartScrollWheel.newChartFrame(chartData, trace);
         } else
         {
@@ -233,7 +306,7 @@ public class ObjectPanel extends JPanel
 
             for (ZoomableChartScrollWheel chart : chartData.getCharts())
             {
-                if (chart.getLastFocusTime() > bestFocusTime)
+                if (bestChart == null || chart.getLastFocusTime() > bestFocusTime)
                 {
                     bestFocusTime = chart.getLastFocusTime();
                     bestChart = chart;
@@ -247,7 +320,6 @@ public class ObjectPanel extends JPanel
 
                 if (!bestChart.getTraces().contains(trace))
                 {
-                    trace.setMaxSize(chartData.detailedSparklineChartSize);
                     trace.setColor(bestChart.popColor());
 
                     if (newAxis)
@@ -269,6 +341,42 @@ public class ObjectPanel extends JPanel
             }
 
         }
+
+        TracePainterDisc markerPainter = new TracePainterDisc();
+        markerPainter.setDiscSize(2);
+        trace.addTracePainter(markerPainter);
+    }
+
+    StreamingTrace createDetailedTrace(final SparklineData data)
+    {
+        if (data.detailedTrace != null)
+            return data.detailedTrace;
+
+        final StreamingTrace trace = new StreamingTrace(chartData.detailedSparklineChartSize,
+                name + ": " + data.fullName);
+        final Subscription subscription = new Subscription(data.path, trace);
+        // Seed the detailed view with the sampled history already on screen.
+        ITrace2D sparkline = data.trace;
+        for (Iterator<ITracePoint2D> it = sparkline.iterator(); it.hasNext();) {
+            ITracePoint2D point = it.next();
+            trace.record(point.getX(), point.getY());
+        }
+        synchronized (subscriptions) {
+            if (latestMessage != null && latestMessage.sequence != data.lastSequence)
+                subscription.record(latestMessage);
+            subscriptions.add(subscription);
+        }
+        data.detailedTrace = trace;
+        chartData.startTrace(trace, new Runnable() {
+            public void run()
+            {
+                synchronized (subscriptions) {
+                    subscriptions.remove(subscription);
+                }
+                data.detailedTrace = null;
+            }
+        });
+        return trace;
     }
 
     class PaintState
@@ -304,6 +412,7 @@ public class ObjectPanel extends JPanel
             }
 
             cs = sections.get(section);
+            cs.sparklines.clear();
 
             // Some enclosing section is collapsed, exit before drawing anything.
 
@@ -455,22 +564,7 @@ public class ObjectPanel extends JPanel
                 value = (Byte) o;
 
             if (collapse_depth > 0)
-            {
-                // even if we are collapsed, we need to update the data in
-                // graphs being displayed
-                SparklineData data = cs.sparklines.get(name);
-
-                if (data.chart != null)
-                {
-                    ITrace2D trace = data.chart.getTraces().first();
-
-                    if (trace.getMaxX() < utime/1000000.0d) {
-                        // this is a new point, add it
-                        trace.addPoint(utime/1000000.0d, value);
-                    }
-                }
                 return;
-            }
 
             if (isstatic)
             {
@@ -510,14 +604,13 @@ public class ObjectPanel extends JPanel
             {
                 SparklineData data = cs.sparklines.get(name);
 
-                if (data.chart == null)
+                if (data.trace == null)
                 {
-                    data.chart = InitChart(name);
+                    data.trace = initSparklineTrace(name);
 
                 }
 
-                Chart2D chart = data.chart;
-                ITrace2D trace = chart.getTraces().first();
+                ITrace2D trace = data.trace;
 
                 // update the positions every loop in case another section
                 // was collapsed
@@ -526,9 +619,9 @@ public class ObjectPanel extends JPanel
                 data.xmax = x[3]+sparklineWidth;
 
                 // add the data to our trace
-                if (trace.getMaxX() < utime/1000000.0d) {
-                    // this is a new point, add it
+                if (data.lastSequence != paintedMessage.sequence) {
                     trace.addPoint(utime/1000000.0d, value);
+                    data.lastSequence = paintedMessage.sequence;
                 }
 
                 data.lastDrawNumber = currentDrawNumber;
@@ -704,16 +797,14 @@ public class ObjectPanel extends JPanel
 
     public void setObject(Object o, long utime)
     {
-        this.o = o;
-        this.utime = utime - chartData.getStartTime();
-
-        JFrame topFrame = (JFrame) SwingUtilities.getWindowAncestor(this);
-
-        if (topFrame.getExtendedState() == Frame.ICONIFIED) {
-            UpdateGraphDataWithoutPaint();
-        } else {
-            repaintWithFramelimit();
+        synchronized (subscriptions) {
+            Message message = new Message(o, utime - chartData.getStartTime(),
+                    latestMessage == null ? 0 : latestMessage.sequence + 1);
+            latestMessage = message;
+            for (Subscription subscription : subscriptions)
+                subscription.record(message);
         }
+        repaintWithFramelimit();
     }
 
     public Dimension getPreferredSize()
@@ -739,7 +830,8 @@ public class ObjectPanel extends JPanel
      */
     void updateVisibleSparklines(JViewport viewport)
     {
-        Rectangle view_rect = viewport.getViewRect();
+        Rectangle view_rect = viewport == null ? new Rectangle(0, 0, getWidth(), getHeight())
+                : viewport.getViewRect();
 
         visibleSparklines.clear();
 
@@ -768,6 +860,12 @@ public class ObjectPanel extends JPanel
 
     public void paint(Graphics g)
     {
+        // Take a consistent message/time snapshot for the entire paint pass.
+        paintedMessage = latestMessage;
+        if (paintedMessage != null) {
+            o = paintedMessage.object;
+            utime = paintedMessage.utime;
+        }
         Graphics2D g2 = (Graphics2D) g;
 
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
@@ -797,36 +895,31 @@ public class ObjectPanel extends JPanel
 
         int previousNumSections = sections.size();
 
-        // check to make sure that visibleSparklines has been
-        // initialized otherwise we can end up not displaying
-        // items if the viewport is never changed
-        if (!visibleSparklinesInitialized
-                && visibleSparklines.isEmpty()
-                && (previousNumSections > 0)
-                && (scrollViewport != null)) {
-
-            visibleSparklinesInitialized = true;
-            updateVisibleSparklines(scrollViewport);
-        }
-
         if (o != null)
-            paintRecurse(g, ps, "", o.getClass(), o, false, -1);
+            paintRecurse(g, ps, "", o.getClass(), o, false, -1, "",
+                    new ArrayList<Object>());
+
+        sections.subList(ps.nextsection, sections.size()).clear();
 
         ps.finish();
         if (ps.y != lastheight) {
             lastheight = ps.y;
             invalidate();
-            getParent().validate();
+            if (getParent() != null)
+                getParent().validate();
         }
 
-        if (previousNumSections != sections.size()) {
+        HashSet<SparklineData> previouslyVisible = new HashSet<SparklineData>(visibleSparklines);
+        updateVisibleSparklines(scrollViewport);
+        if (previousNumSections != sections.size() || !previouslyVisible.equals(visibleSparklines)) {
             // if the number of sections has changed, the system that figures out
             // what to draw based on user view needs to rerun to update
             repaint();
         }
     }
 
-    void paintRecurse(Graphics g, PaintState ps, String name, Class cls, Object o, boolean isstatic, int section)
+    void paintRecurse(Graphics g, PaintState ps, String name, Class cls, Object o, boolean isstatic,
+            int section, String fullName, ArrayList<Object> path)
     {
         if (o == null) {
             ps.drawStrings(cls==null ? "(null)" : cls.getName(), name, "(null)", isstatic);
@@ -837,7 +930,7 @@ public class ObjectPanel extends JPanel
 
             // This is our common case...
             Section cs = sections.get(section);
-            SparklineData data = cs.sparklines.get(name); // if data == null, this graph doesn't exist yet
+            SparklineData data = sparklinesByPath.get(fullName);
 
             if (data == null)
             {
@@ -846,13 +939,15 @@ public class ObjectPanel extends JPanel
 
                 data = new SparklineData();
                 data.name = name;
-                data.section = cs;
                 data.isHovering = false;
-                data.chart = null;
-
-                cs.sparklines.put(name, data);
+                data.path = path.toArray();
+                data.fullName = fullName;
+                sparklinesByPath.put(fullName, data);
 
             }
+
+            data.section = cs;
+            cs.sparklines.put(name, data);
 
             // text can drop below the expected height for letters like
             // "g", which makes it possible to click on a letter and get
@@ -862,7 +957,7 @@ public class ObjectPanel extends JPanel
             data.ymin = ps.y - ps.textheight + text_below_line_height;
             data.ymax = ps.y + text_below_line_height;
 
-            if (visibleSparklines.contains(data) || graphingSparklines.contains(data))
+            if (visibleSparklines.contains(data))
             {
                 ps.drawStringsAndGraph(cls, name, o, isstatic, section);
 
@@ -891,8 +986,12 @@ public class ObjectPanel extends JPanel
             int sz = Array.getLength(o);
             int sec = ps.beginSection(cls.getComponentType()+"[]", name+"["+sz+"]", "");
 
-            for (int i = 0; i < sz; i++)
-                paintRecurse(g, ps, name+"["+i+"]", cls.getComponentType(), Array.get(o, i), isstatic, sec);
+            for (int i = 0; i < sz; i++) {
+                path.add(i);
+                paintRecurse(g, ps, name+"["+i+"]", cls.getComponentType(), Array.get(o, i),
+                        isstatic, sec, fullName+"["+i+"]", path);
+                path.remove(path.size() - 1);
+            }
 
             ps.endSection(sec);
 
@@ -902,106 +1001,26 @@ public class ObjectPanel extends JPanel
             int sec = ps.beginSection(cls.getName(), name, "");
 
             // it's a class
-            Field fs[] = cls.getFields();
+            Field fs[] = fieldsByClass.get(cls);
+            if (fs == null) {
+                fs = cls.getFields();
+                fieldsByClass.put(cls, fs);
+            }
             for (Field f : fs) {
+                path.add(f);
                 try {
-                    paintRecurse(g, ps, f.getName(), f.getType(), f.get(o), isstatic || ((f.getModifiers()&Modifier.STATIC) != 0), sec);
+                    String fieldName = fullName.isEmpty() ? f.getName() : fullName + "." + f.getName();
+                    paintRecurse(g, ps, f.getName(), f.getType(), f.get(o),
+                            isstatic || Modifier.isStatic(f.getModifiers()), sec, fieldName, path);
                 } catch (Exception ex) {
                     System.out.println(ex.getMessage());
                     ex.printStackTrace(System.out);
+                } finally {
+                    path.remove(path.size() - 1);
                 }
             }
 
             ps.endSection(sec);
-        }
-    }
-
-    /**
-     * Usually the paintRecurse method deals with searching through the incoming data
-     * but when the window is minimized, we do not paint, causing the child graphs
-     * to stop updating.  This method performs that search and adds data to the graphs
-     * without actually drawing anything
-     */
-    void UpdateGraphDataWithoutPaint() {
-        for (SparklineData data : graphingSparklines) {
-            UpdateGraphDataWithoutPaintRecurse(data, "", o.getClass(), o);
-        }
-    }
-
-    /**
-     * Recursive call for the search through the data object
-     *
-     * @param sparklineToUpdate data to update
-     * @param name
-     * @param cls
-     * @param o
-     */
-    void UpdateGraphDataWithoutPaintRecurse(SparklineData sparklineToUpdate, String name, Class cls, Object o) {
-
-        if (sparklineToUpdate.chart == null) {
-            // don't have a big chart for this, no point in updating it
-            return;
-        }
-
-        if (o instanceof Enum || cls.equals(String.class)) {
-            // no further objects to recurse into and no
-            // data to store
-            return;
-        }
-
-
-        if (cls.isPrimitive() || cls.equals(Byte.TYPE)) {
-
-            if (sparklineToUpdate.name.equals(name))
-            {
-                // we found the part of the data that this chart is using
-                // update it!
-                double value = Double.NaN;
-
-                if (o instanceof Double)
-                    value = (Double) o;
-                else if (o instanceof Float)
-                    value = (Float) o;
-                else if (o instanceof Integer)
-                    value = (Integer) o;
-                else if (o instanceof Long)
-                    value = (Long) o;
-                else if (o instanceof Short)
-                    value = (Short) o;
-                else if (o instanceof Byte)
-                    value = (Byte) o;
-
-
-                ITrace2D trace = sparklineToUpdate.chart.getTraces().first();
-
-                if (trace.getMaxX() < utime/1000000.0d) {
-                    // this is a new point, add it
-                    trace.addPoint(utime/1000000.0d, value);
-                }
-                return;
-            }
-
-        } else if (cls.isArray())  {
-
-            int sz = Array.getLength(o);
-
-            for (int i = 0; i < sz; i++)
-                UpdateGraphDataWithoutPaintRecurse(sparklineToUpdate, name+"["+i+"]", cls.getComponentType(), Array.get(o, i));
-
-        } else {
-
-            // it's a compound type. recurse.
-
-            // it's a class
-            Field fs[] = cls.getFields();
-            for (Field f : fs) {
-                try {
-                    UpdateGraphDataWithoutPaintRecurse(sparklineToUpdate, f.getName(), f.getType(), f.get(o));
-                } catch (Exception ex) {
-                    System.out.println(ex.getMessage());
-                    ex.printStackTrace(System.out);
-                }
-            }
         }
     }
 
@@ -1010,29 +1029,11 @@ public class ObjectPanel extends JPanel
         return false;
     }
 
-    /**
-     * Initialize a chart.  This should happen before you want to use
-     * the chart, either for storing data or displaying data.  It's best
-     * to delay the inits until you need them, because making a lot of charts
-     * seems to slow down chart interactions.
-     *
-     * @param name Name of the trace you want to init
-     * @return the created chart object
-     */
-    public Chart2D InitChart(String name)
+    private Trace2DLtd initSparklineTrace(String name)
     {
-        Chart2D chart = new Chart2D();
-
-        ITrace2D trace = new Trace2DLtd(chartData.sparklineChartSize, name);
-
-        chart.addTrace(trace);
-
-        // add marker lines to the trace
-        TracePainterDisc markerPainter = new TracePainterDisc();
-        markerPainter.setDiscSize(2);
-        trace.addTracePainter(markerPainter);
-
-        return chart;
+        Trace2DLtd trace = new Trace2DLtd(chartData.sparklineChartSize, name);
+        trace.setRenderer(sparklineRenderer);
+        return trace;
     }
 
     class MyMouseAdapter extends MouseAdapter

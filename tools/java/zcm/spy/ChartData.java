@@ -1,8 +1,11 @@
 package zcm.spy;
 
-import java.awt.Color;
-import java.util.ArrayList;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
+import javax.swing.Timer;
+import info.monitorenter.gui.chart.ITrace2D;
 
 /**
  * Global class allowing multiple charts to know about each other and make intelligent
@@ -23,7 +26,18 @@ public class ChartData
     
     // constants for setting how much data we keep for each type of graph
     public final int sparklineChartSize = 500;
-    public final int detailedSparklineChartSize = 1500;
+    public final int detailedSparklineChartSize =
+            Math.max(1, Integer.getInteger("zcm.spy.chartSize", 15000));
+
+    // These registrations and the chart library are owned by the Swing thread.
+    private final LinkedHashMap<StreamingTrace, Runnable> streams =
+            new LinkedHashMap<StreamingTrace, Runnable>();
+    private final Timer refreshTimer = new Timer(33, new ActionListener() {
+        public void actionPerformed(ActionEvent e)
+        {
+            flush();
+        }
+    });
 
     /**
      * Constructor for ChartData.  Initializes color list and sets the start time of zcm-spy
@@ -44,6 +58,27 @@ public class ChartData
     public LinkedList<ZoomableChartScrollWheel> getCharts()
     {
         return charts;
+    }
+
+    void startTrace(StreamingTrace trace, Runnable onClose)
+    {
+        streams.put(trace, onClose);
+        refreshTimer.start();
+    }
+
+    void stopTrace(ITrace2D trace)
+    {
+        Runnable onClose = streams.remove(trace);
+        if (onClose != null)
+            onClose.run();
+        if (streams.isEmpty())
+            refreshTimer.stop();
+    }
+
+    void flush()
+    {
+        for (StreamingTrace trace : streams.keySet())
+            trace.flush();
     }
 
 
