@@ -346,6 +346,19 @@ public class ObjectPanel extends JPanel
         trace.setTracePainter(new PixelTracePainter(trace));
     }
 
+    StreamingTrace traceForSignal(SignalCatalog.Signal signal)
+    {
+        SparklineData data = sparklinesByPath.get(signal.name);
+        if (data == null) {
+            data = new SparklineData();
+            data.name = signal.name;
+            data.fullName = signal.name;
+            data.path = signal.path;
+            sparklinesByPath.put(signal.name, data);
+        }
+        return createDetailedTrace(data);
+    }
+
     StreamingTrace createDetailedTrace(final SparklineData data)
     {
         if (data.detailedTrace != null)
@@ -356,12 +369,15 @@ public class ObjectPanel extends JPanel
         // A device-pixel hairline avoids expanding thousands of tiny segments
         // into stroked polygons on high-DPI displays.
         trace.setStroke(new BasicStroke(0));
+        trace.setTracePainter(new PixelTracePainter(trace));
         final Subscription subscription = new Subscription(data.path, trace);
         // Seed the detailed view with the sampled history already on screen.
         ITrace2D sparkline = data.trace;
-        for (Iterator<ITracePoint2D> it = sparkline.iterator(); it.hasNext();) {
-            ITracePoint2D point = it.next();
-            trace.record(point.getX(), point.getY());
+        if (sparkline != null) {
+            for (Iterator<ITracePoint2D> it = sparkline.iterator(); it.hasNext();) {
+                ITracePoint2D point = it.next();
+                trace.record(point.getX(), point.getY());
+            }
         }
         synchronized (subscriptions) {
             if (latestMessage != null && latestMessage.sequence != data.lastSequence)
@@ -932,7 +948,7 @@ public class ObjectPanel extends JPanel
         while (sparklinesByPath.size() > 512 && cached.hasNext()) {
             SparklineData data = cached.next();
             if (data.detailedTrace == null && !visibleSparklines.contains(data)) {
-                if (data.section.sparklines.get(data.name) == data)
+                if (data.section != null && data.section.sparklines.get(data.name) == data)
                     data.section.sparklines.remove(data.name);
                 cached.remove();
             }
@@ -980,6 +996,7 @@ public class ObjectPanel extends JPanel
 
             }
 
+            data.name = name;
             data.section = cs;
             cs.sparklines.put(name, data);
 

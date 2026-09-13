@@ -79,6 +79,83 @@ public class ChartData
     {
         for (StreamingTrace trace : streams.keySet())
             trace.flush();
+        for (ZoomableChartScrollWheel chart : charts)
+            chart.refreshView();
+    }
+
+    SignalCatalog.Source signalSource;
+    private SignalCatalog.Favorites favorites;
+    // One daemon writer preserves ordering without doing preferences I/O on the EDT.
+    private static final java.util.concurrent.ExecutorService favoriteWriter =
+        java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "spy-favorites"); thread.setDaemon(true); return thread;
+        });
+
+    SignalCatalog.Favorites favorites()
+    {
+        if (favorites == null) favorites = new SignalCatalog.Favorites(
+            java.util.prefs.Preferences.userNodeForPackage(ChartData.class).node("signalFavorites"));
+        return favorites;
+    }
+
+    void saveFavorites(java.util.function.Consumer<String> onError)
+    {
+        final java.util.Set<String> snapshot = new java.util.LinkedHashSet<String>(favorites().ids);
+        favoriteWriter.execute(() -> {
+            try {
+                SignalCatalog.Favorites saved = new SignalCatalog.Favorites(
+                    java.util.prefs.Preferences.userNodeForPackage(ChartData.class).node("signalFavorites"));
+                saved.ids.clear(); saved.ids.addAll(snapshot); saved.save();
+            } catch (Exception error) {
+                javax.swing.SwingUtilities.invokeLater(() -> onError.accept(error.getMessage()));
+            }
+        });
+    }
+
+    void linkView(ZoomableChartScrollWheel source)
+    {
+        if (!source.isTimeLinked()) return;
+        for (ZoomableChartScrollWheel chart : charts)
+            if (chart != source && chart.isTimeLinked()) chart.copyTimeView(source);
+    }
+
+    void linkCursors(ZoomableChartScrollWheel source)
+    {
+        if (!source.isTimeLinked()) return;
+        for (ZoomableChartScrollWheel chart : charts)
+            if (chart != source && chart.isTimeLinked()) chart.copyCursors(source);
+    }
+
+    void linkHover(ZoomableChartScrollWheel source)
+    {
+        if (!source.isTimeLinked()) return;
+        for (ZoomableChartScrollWheel chart : charts)
+            if (chart != source && chart.isTimeLinked()) chart.copyHover(source);
+    }
+
+    void linkPause(ZoomableChartScrollWheel source, boolean paused)
+    {
+        if (!source.isTimeLinked()) return;
+        for (ZoomableChartScrollWheel chart : charts)
+            if (chart != source && chart.isTimeLinked()) chart.applyPaused(paused);
+    }
+
+    double latestTime(ZoomableChartScrollWheel source)
+    {
+        double latest = source.latestTime();
+        if (source.isTimeLinked())
+            for (ZoomableChartScrollWheel chart : charts)
+                if (chart.isTimeLinked()) latest = Math.max(latest, chart.latestTime());
+        return latest;
+    }
+
+    double earliestTime(ZoomableChartScrollWheel source)
+    {
+        double earliest = source.earliestTime();
+        if (source.isTimeLinked())
+            for (ZoomableChartScrollWheel chart : charts)
+                if (chart.isTimeLinked()) earliest = Math.min(earliest, chart.earliestTime());
+        return earliest;
     }
 
 

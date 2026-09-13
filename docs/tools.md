@@ -19,6 +19,46 @@ to zoom only X (time), or **Ctrl** to zoom only Y (including separate Y axes).
 Holding both modifiers zooms both axes. Drag to pan; double-click to reset all axes.
 An axis you do not zoom keeps its existing automatic scaling.
 
+The detailed chart toolbar provides:
+
+- **Pause / Resume** (or **Space**): freeze the displayed samples while incoming
+  data continues collecting in a separate bounded buffer. Resume catches up to
+  the latest samples. **Live** also returns to following the newest data.
+- **Last 5 s**, **Last 30 s**, **Last 2 min**, and **All retained** time windows.
+  Panning or zooming X stops following time; zooming only Y keeps following.
+  The toolbar shows the actual retained duration, which depends on message rate
+  and the sample limit. Selecting a longer window cannot recover expired data.
+- **Set A / Set B**: place measurement cursors by clicking the plot. Clicking
+  directly places A first, then B; pressing **A** or **B** places that cursor at
+  the pointer. The readout shows elapsed time between the cursors. **Clear cursors**
+  (or **Esc**) removes both measurements.
+- **Link time**: enable this on each window you want to navigate together.
+  Linked charts share horizontal pan/zoom, time presets, pause/live, and cursor
+  positions. Each chart retains its own Y-axis settings. Joining adopts the
+  existing group's view; disabling the button leaves that window independent.
+- **Add signals…**: search the latest decoded messages by channel and field name,
+  including nested fields and array indices such as `joints[12].velocity`.
+  Search is case-insensitive and supports multiple terms. Check several signals
+  and choose **Add selected**; selections survive changes to the search.
+  Mark **Favorite** to save a signal across sessions, and use **Favorites only**
+  to find it later. **Refresh** discovers new channels and array elements.
+  Search runs in the background and displays at most 2,000 matches; narrow the
+  query when the result limit is reached. Only numeric fields in received,
+  decoded messages are available. A signal already plotted elsewhere brings
+  its existing chart forward.
+
+Move the pointer over the plot for a shared time crosshair. The legend below
+shows each signal's value at the crosshair and at A/B, plus the change in value.
+Values use the nearest retained sample to each timestamp (the earlier sample
+wins ties), so signals with different sample rates remain comparable. Readouts
+outside a signal's history are blank. With the pointer off the plot, the first
+value column shows each signal's latest value.
+
+In the legend, **Show** toggles a trace, **Solo** temporarily hides the others,
+clicking **Color** changes its color, and **Y axis** assigns it to the main axis,
+an existing secondary axis, or a new one. Turning Solo off restores the previous
+visibility settings. Hidden traces continue collecting data.
+
 Detailed traces show small square sample markers. Zoomed-out traces draw at most
 one marker per horizontal chart pixel; zooming in reveals each separated sample.
 The line still preserves signal extrema, and the full sample history is retained.
@@ -33,6 +73,11 @@ history size, set the Java property `zcm.spy.chartSize`, for example:
 ```
 JAVA_TOOL_OPTIONS=-Dzcm.spy.chartSize=50000 zcm-spy
 ```
+
+While paused, the displayed snapshot remains available for inspection even if
+the incoming buffer fills. On resuming, older collected samples beyond the
+configured limit expire. Signal collection ends when its trace is removed or
+its chart window is closed.
 
 ### Spy Lite
 ##### To mark for build: `$./waf configure --use-elf`

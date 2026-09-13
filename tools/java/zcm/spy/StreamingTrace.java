@@ -18,6 +18,43 @@ final class StreamingTrace extends Trace2DLtd
     private final Object pendingLock = new Object();
     private double[] pendingX, pendingY, drawingX, drawingY;
     private int pendingStart, pendingSize;
+    private boolean paused;
+    // Cursor lookups use a primitive ring and binary search, never a scan per
+    // mouse event. This ring follows the displayed history, including pauses.
+    private double[] historyX, historyY;
+    private int historyStart, historySize;
+
+    void setPaused(boolean paused) { this.paused = paused; }
+    boolean isPaused() { return paused; }
+
+    double latestValue()
+    {
+        return historySize == 0 ? Double.NaN : historyY[(historyStart + historySize - 1) % historyY.length];
+    }
+
+    static final class Sample {
+        final double time, value;
+        Sample(double time, double value) { this.time = time; this.value = value; }
+    }
+
+    Sample sampleAt(double time)
+    {
+        if (!Double.isFinite(time) || historySize == 0 ||
+            time < historyX[historyStart] || time > historyX[(historyStart + historySize - 1) % historyX.length])
+            return null;
+        int low = 0, high = historySize;
+        while (low < high) {
+            int mid = (low + high) >>> 1;
+            if (historyX[(historyStart + mid) % historyX.length] < time) low = mid + 1;
+            else high = mid;
+        }
+        int index = Math.min(low, historySize - 1);
+        if (index > 0 && time - historyX[(historyStart + index - 1) % historyX.length] <=
+                historyX[(historyStart + index) % historyX.length] - time)
+            index--;
+        index = (historyStart + index) % historyX.length;
+        return new Sample(historyX[index], historyY[index]);
+    }
     private boolean rendering;
     private final ArrayList<ITracePoint2D> renderPoints = new ArrayList<ITracePoint2D>();
 
@@ -55,6 +92,8 @@ final class StreamingTrace extends Trace2DLtd
         pendingY = new double[capacity];
         drawingX = new double[capacity];
         drawingY = new double[capacity];
+        historyX = new double[capacity];
+        historyY = new double[capacity];
     }
 
     @Override
@@ -83,6 +122,7 @@ final class StreamingTrace extends Trace2DLtd
 
     void flush()
     {
+        if (paused) return;
         int start, size;
         synchronized (pendingLock) {
             start = pendingStart;
@@ -113,6 +153,11 @@ final class StreamingTrace extends Trace2DLtd
     @Override
     protected boolean addPointInternal(ITracePoint2D point)
     {
+        int index = (historyStart + historySize) % historyX.length;
+        historyX[index] = point.getX();
+        historyY[index] = point.getY();
+        if (historySize == historyX.length) historyStart = (historyStart + 1) % historyX.length;
+        else historySize++;
         if (m_buffer.isFull()) {
             ITracePoint2D oldest = m_buffer.getOldest();
             if (minima.peekFirst() == oldest)
@@ -159,5 +204,6 @@ final class StreamingTrace extends Trace2DLtd
         super.removeAllPointsInternal();
         minima.clear();
         maxima.clear();
+        historyStart = historySize = 0;
     }
 }

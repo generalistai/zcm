@@ -12,6 +12,8 @@ trap 'rm -rf "$classes"' EXIT
 mapfile -t sources < <(find "$root/tools/java/zcm" "$root/zcm/java/zcm" -name '*.java')
 javac -cp "$chart_jar" -d "$classes" "${sources[@]}" \
     "$root/test/java/zcm/spy/ChartStreamingTest.java" \
+    "$root/test/java/zcm/spy/ChartWorkspaceTest.java" \
+    "$root/test/java/zcm/spy/ChartWorkspaceGuiTest.java" \
     "$root/test/java/zcm/spy/RenderPerformanceTest.java" \
     "$root/test/java/zcm/spy/SpyUiScaleTest.java"
 java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.SpyUiScaleTest
@@ -56,3 +58,9 @@ SPY_TEST_MONITORS='0: +*eDP-1 3840/301x2400/188+0+0 eDP-1' check_dpi invalid 96 
 
 java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.ChartStreamingTest "$@"
 java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.RenderPerformanceTest "$@"
+java -Djava.awt.headless=true -Djava.util.prefs.userRoot="$classes/prefs" -ea \
+    -cp "$classes:$chart_jar" zcm.spy.ChartWorkspaceTest "$@"
+if [[ ${SPY_GUI_TESTS:-0} == 1 ]]; then
+    java -Djava.util.prefs.userRoot="$classes/gui-prefs" -ea \
+        -cp "$classes:$chart_jar" zcm.spy.ChartWorkspaceGuiTest
+fi

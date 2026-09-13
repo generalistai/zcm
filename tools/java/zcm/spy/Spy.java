@@ -79,6 +79,8 @@ public class Spy
         tcm.getColumn(6).setMaxWidth(100);
 
         JFrame jif = new JFrame(title);
+        SpyIcons.window(jif);
+        SpyIcons.decorate(clearButton, SpyIcons.Symbol.CLEAR);
         jif.setLayout(new BorderLayout());
         jif.add(channelTable.getTableHeader(), BorderLayout.PAGE_START);
         // XXX weird bug, if clearButton is added after JScrollPane, we get an error.
@@ -86,6 +88,12 @@ public class Spy
         jif.add(new JScrollPane(channelTable), BorderLayout.CENTER);
 
         chartData = new ChartData(utime_now());
+        chartData.signalSource = new SignalCatalog.Source() {
+            public java.util.List<ChannelData> channels() {
+                synchronized (channelList) { return new ArrayList<ChannelData>(channelList); }
+            }
+            public ObjectPanel inspector(ChannelData channel) { return viewerFor(channel); }
+        };
 
         jif.setSize(800,600);
         jif.setLocationByPlatform(true);
@@ -192,6 +200,7 @@ public class Spy
                 // plugin by calling its actionPerformed method
 
                 JFrame pluginFrame = new JFrame(cd.name);
+                SpyIcons.window(pluginFrame);
                 pluginFrame.setLayout(new BorderLayout());
                 JDesktopPane pluginJdp = new JDesktopPane();
                 pluginFrame.add(pluginJdp);
@@ -224,13 +233,24 @@ public class Spy
         }
     }
 
+    ObjectPanel viewerFor(ChannelData cd)
+    {
+        if (cd.viewer == null) {
+            ObjectPanel viewer = new ObjectPanel(cd.name, chartData);
+            viewer.setObject(cd.last, cd.last_utime);
+            cd.viewer = viewer;
+        }
+        return cd.viewer;
+    }
+
     void createViewer(ChannelData cd)
     {
 
-        if (cd.viewer == null) {
+        if (cd.viewerFrame == null) {
             cd.viewerFrame = new JFrame(cd.name);
+            SpyIcons.window(cd.viewerFrame);
 
-            cd.viewer = new ObjectPanel(cd.name, chartData);
+            viewerFor(cd);
 
             //    cd.viewer = new ObjectViewer(cd.name, cd.cls, null);
             cd.viewerFrame.setLayout(new BorderLayout());
@@ -246,8 +266,6 @@ public class Spy
             
             cd.viewerFrame.add(viewerScrollPane, BorderLayout.CENTER);
             
-            cd.viewer.setObject(cd.last, cd.last_utime);
-
             //jdp.add(cd.viewerFrame);
 
             cd.viewerFrame.setSize(650,400);
