@@ -30,7 +30,6 @@ trap command_failed ERR
 
 export LD_LIBRARY_PATH=$ROOTDIR/build/$BLD/test/types:$LD_LIBRARY_PATH
 
-export JAVA_HOME=$(readlink -f /usr/bin/javac | sed "s:/bin/javac::")
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
 echo
@@ -40,6 +39,12 @@ echo "Running core tests"
 echo "**********************************"
 $ROOTDIR/build/$BLD/test/runner
 echo "Success"
+
+if [ -z "${1:-}" ]; then
+    echo
+    echo "Running Java spy chart tests"
+    "$THISDIR/java/run-spy-tests.sh"
+fi
 
 if [ $# -ne 0 ]; then
     echo "Skipping non c/c++ lanugage tests in sanitizer mode"
