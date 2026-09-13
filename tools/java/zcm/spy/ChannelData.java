@@ -1,6 +1,7 @@
 package zcm.spy;
 
 import javax.swing.*;
+import java.lang.reflect.Constructor;
 
 /** LCSpy managed information about a channel. **/
 public class ChannelData
@@ -8,6 +9,7 @@ public class ChannelData
     public String      name;
     public Class       cls;
     public long        fingerprint;   // zcm type fingerprint
+    Constructor        decoder;       // resolved once, used by the receive thread
     public int         row;
 
     public long        nreceived;
@@ -31,5 +33,5 @@ public class ChannelData
     public long        hz_max_interval;
     public long        hz_bytes;
 
-    public Object      last;         // last received object on this channel.
+    public volatile Object last;     // last received object on this channel.
 }

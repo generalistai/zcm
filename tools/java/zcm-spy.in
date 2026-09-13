@@ -1,5 +1,10 @@
 #!/bin/sh
 prefix=@prefix@
+libdir=@LIBDIR@
 jchart2d=@JCHART2D_JAR_SHELL@
 jars=$prefix/share/java/zcm.jar:$prefix/share/java/zcm-tools.jar:$jchart2d
+# Java does not search the install libdir by default on Linux. Include it for
+# both libzcmjni and its native dependencies, preserving user-supplied paths.
+LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH
 exec java -server -Xmx128m -Xms64m -ea -cp "$jars" zcm.spy.Spy "$@"

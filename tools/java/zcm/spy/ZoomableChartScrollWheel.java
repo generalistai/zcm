@@ -2,6 +2,9 @@ package zcm.spy;
 
 import java.awt.Color;
 import java.awt.Container;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
@@ -19,6 +22,8 @@ import info.monitorenter.gui.chart.ZoomableChart;
 import info.monitorenter.gui.chart.axis.AAxis;
 import info.monitorenter.gui.chart.axis.AxisLinear;
 import info.monitorenter.gui.chart.labelformatters.LabelFormatterNumber;
+import info.monitorenter.gui.chart.rangepolicies.RangePolicyFixedViewport;
+import info.monitorenter.util.Range;
 import javax.swing.*;
 
 /**
@@ -47,6 +52,24 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     private JPopupMenu popup = new JPopupMenu();
     
     ChartData chartData;
+
+    @Override
+    protected void paintComponent(Graphics g)
+    {
+        Graphics2D graphics = (Graphics2D)g.create();
+        graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+                                 RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        try {
+            super.paintComponent(graphics);
+        } finally {
+            graphics.dispose();
+            // A painter normally resets this itself. Also restore full-history
+            // iteration if the chart library aborts a paint with an exception.
+            for (ITrace2D trace : getTraces())
+                if (trace instanceof StreamingTrace)
+                    ((StreamingTrace)trace).setRendering(false);
+        }
+    }
     
     /**
      * Constructor, taking in a chartData so that we can set up the chart 
@@ -59,7 +82,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         
         this.getAxisX().setPaintGrid(true);
         this.getAxisY().setPaintGrid(true);
-        this.setUseAntialiasing(true);
+        this.setUseAntialiasing(false);
         this.setGridColor(Color.LIGHT_GRAY);
         this.getAxisX().getAxisTitle().setTitle("Time (sec)");
         this.getAxisY().getAxisTitle().setTitle("");
@@ -76,7 +99,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         this.setFixedWidthXAxisFormat();
         
         
-        this.setMinPaintLatency(16); // cap the frame-rate at 60fps
+        this.setMinPaintLatency(33); // match the 30 Hz chart data refresh
     }
     
     /**
@@ -518,6 +541,19 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     
     
     
+    /** Zoom one axis around the cursor without freezing the other axes. */
+    private boolean zoomAxis(IAxis<?> axis, int pixel, double fraction, double factor)
+    {
+        double extent = axis.getRange().getExtent() * factor;
+        double anchor = axis.translatePxToValue(pixel);
+        double min = anchor - extent * fraction;
+        double max = anchor + extent * (1 - fraction);
+        if (!Double.isFinite(min) || !Double.isFinite(max) || min >= max)
+            return false;
+        axis.setRangePolicy(new RangePolicyFixedViewport(new Range(min, max)));
+        return true;
+    }
+
     public class MyMouseWheelListener implements MouseWheelListener
     {
         private ZoomableChartScrollWheel chart;
@@ -530,77 +566,33 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         @Override
         public void mouseWheelMoved(MouseWheelEvent e)
         {
-            
-            int notches = e.getWheelRotation();
-         
-            IAxis xAxis = chart.getAxisX();
-            IAxis yAxis = chart.getAxisY();
-            double xAxisRange = xAxis.getRange().getExtent();
-            double yAxisRange = yAxis.getRange().getExtent();
-            
-            double zoomFactor;
-            
-            if (notches > 0)
-            {
-                zoomFactor = notches * 1.2;
-            } else {
-                zoomFactor = -notches * 0.8;
-            }
-            
-            double xSqSize = xAxisRange *  zoomFactor;
-            double ySqSize = yAxisRange *  zoomFactor;
-            
-            
-            // compute percentage of chart the mouse pointer is at
-            double xPercent = ((double) e.getX() - (double) chart.getXChartStart()) / (double)(chart.getXChartEnd() - chart.getXChartStart()); 
-            double yPercent = ((double) e.getY() - (double) chart.getYChartEnd()) / (double)(chart.getYChartStart() - chart.getYChartEnd());
-            
-            // compute new bounds with the percentages remaining the same so whatever
-            // is under the cursor will stay under the cursor
-            
-            
-            // the left most value should be the value the pixel is at minus half of the square size
-            double xValueUnderCursor = xAxis.translatePxToValue(e.getX());
-            
-            double xMin = xValueUnderCursor - xSqSize * xPercent;
-            double xMax = xValueUnderCursor + xSqSize * (1 - xPercent);
-            
-            
-            double yValueUnderCursor = yAxis.translatePxToValue(e.getY());
-            
-            double yMin = yValueUnderCursor - ySqSize * (1 - yPercent);
-            double yMax = yValueUnderCursor + ySqSize * yPercent;
-            
-            if (Double.isNaN(xMin) || Double.isNaN(xMax) || Double.isNaN(yMin) || Double.isNaN(yMax))
-            {
+            double rotation = e.getPreciseWheelRotation();
+            int width = chart.getXChartEnd() - chart.getXChartStart();
+            int height = chart.getYChartStart() - chart.getYChartEnd();
+            if (rotation == 0 || width <= 0 || height <= 0)
                 return;
+
+            // Shift selects X, Ctrl selects Y; neither or both selects both.
+            boolean zoomX = !e.isControlDown() || e.isShiftDown();
+            boolean zoomY = !e.isShiftDown() || e.isControlDown();
+            double factor = Math.pow(1.2, rotation);
+            double xFraction = (e.getX() - chart.getXChartStart()) / (double)width;
+            double yFraction = (chart.getYChartStart() - e.getY()) / (double)height;
+
+            boolean changed = false;
+            if (zoomX && zoomAxis(chart.getAxisX(), e.getX(), xFraction, factor)) {
+                chart.setVariableWidthXAxisFormat();
+                changed = true;
             }
-            
-            chart.zoom(xMin, xMax, yMin, yMax);
-            
-            
-            
-            // also zoom right hand Y axes
-            
-            for (int i = 0; i < rightYAxis.size(); i++)
-            {
-                AAxis axis = rightYAxis.get(i);
-                
-                double axisRange = axis.getMax() - axis.getMin();
-                double sqSize =axisRange * zoomFactor;
-                double underCursor = axis.translatePxToValue(e.getY());
-                
-                double minVal = underCursor - sqSize * (1 - yPercent);
-                double maxVal = underCursor + sqSize * yPercent;
-                
-                zoom(axis, axis.translateValueToPx(minVal), axis.translateValueToPx(maxVal));
-                
+            if (zoomY) {
+                changed |= zoomAxis(chart.getAxisY(), e.getY(), yFraction, factor);
+                for (AAxis<?> axis : chart.rightYAxis)
+                    changed |= zoomAxis(axis, e.getY(), yFraction, factor);
             }
-            
-            setVariableWidthXAxisFormat();
-            
-            
-            
+            if (changed) {
+                chart.repaint();
+                e.consume();
+            }
         }
     }
     

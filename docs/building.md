@@ -83,6 +83,8 @@ For a jar installed elsewhere, use `--jchart2d-jar=/path/to/jchart2d.jar`.
 The detected jar is used to compile the Java tools and by the installed `zcm-spy`
 launcher; no `CLASSPATH` export is needed for jchart2d. Keep that jar available at
 the configured path when running `zcm-spy`.
+The launcher adds the configured library directory to `LD_LIBRARY_PATH` so Java
+can load `libzcmjni` and its dependencies without a separate environment export.
 
 If you're still having issues building, check out our [FAQs](FAQs.md) for more info.
 If you still can't find the answer to your question, feel free to

@@ -1,6 +1,9 @@
 package zcm.spy;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.Collections;
 
 import info.monitorenter.gui.chart.ITracePoint2D;
 import info.monitorenter.gui.chart.traces.Trace2DLtd;
@@ -15,6 +18,31 @@ final class StreamingTrace extends Trace2DLtd
     private final Object pendingLock = new Object();
     private double[] pendingX, pendingY, drawingX, drawingY;
     private int pendingStart, pendingSize;
+    private boolean rendering;
+    private final ArrayList<ITracePoint2D> renderPoints = new ArrayList<ITracePoint2D>();
+
+    void setRendering(boolean rendering)
+    {
+        this.rendering = rendering;
+    }
+
+    @Override
+    public Iterator<ITracePoint2D> iterator()
+    {
+        // The streaming painter draws the trace in one batch at the end of
+        // the paint iteration. Axis scaling and callers outside that iteration
+        // still receive the complete history.
+        return rendering ? Collections.<ITracePoint2D>emptyList().iterator() : super.iterator();
+    }
+
+    Iterator<ITracePoint2D> renderIterator()
+    {
+        Iterator<ITracePoint2D> points = super.iterator();
+        int width = Math.max(1, getRenderer().getXChartEnd() - getRenderer().getXChartStart());
+        if (getSize() <= width * 4)
+            return points;
+        return PixelTraceIterator.reduce(points, width, renderPoints);
+    }
 
     // Monotonic queues avoid scanning the entire trace when an extremum expires.
     private final ArrayDeque<ITracePoint2D> minima = new ArrayDeque<ITracePoint2D>();

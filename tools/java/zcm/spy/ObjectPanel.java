@@ -14,7 +14,6 @@ import info.monitorenter.gui.chart.ITrace2D;
 import info.monitorenter.gui.chart.ITracePoint2D;
 import info.monitorenter.gui.chart.axis.AxisLinear;
 import info.monitorenter.gui.chart.traces.Trace2DLtd;
-import info.monitorenter.gui.chart.traces.painters.TracePainterDisc;
 
 /**
  * Panel that displays general data for zcm types.  Viewed by double-clicking
@@ -30,11 +29,12 @@ public class ObjectPanel extends JPanel
     int lastheight = 100;
     JViewport scrollViewport;
     private final AtomicBoolean repaintPending = new AtomicBoolean();
-    private final javax.swing.Timer repaintTimer = new javax.swing.Timer(16, new ActionListener() {
+    private final javax.swing.Timer repaintTimer = new javax.swing.Timer(33, new ActionListener() {
         public void actionPerformed(ActionEvent e)
         {
             repaintPending.set(false);
-            repaint();
+            if (isShowing())
+                repaint();
         }
     });
 
@@ -96,15 +96,15 @@ public class ObjectPanel extends JPanel
     }
 
     private final ArrayList<Subscription> subscriptions = new ArrayList<Subscription>();
-    private final HashMap<String, SparklineData> sparklinesByPath =
-            new HashMap<String, SparklineData>();
+    final LinkedHashMap<String, SparklineData> sparklinesByPath =
+            new LinkedHashMap<String, SparklineData>(128, 0.75f, true);
     private final HashMap<Class, Field[]> fieldsByClass = new HashMap<Class, Field[]>();
 
     final int sparklineWidth = 150; // width in pixels of all sparklines
 
     // margin around the viewport area in which we will draw graphs
     // (in pixels)
-    final int sparklineDrawMargin = 500;
+    final int sparklineDrawMargin = 0;
 
     Section currentlyHoveringSection; // section the mouse is hovering over
     String currentlyHoveringName; // name of the section the mouse is hovering over
@@ -115,6 +115,7 @@ public class ObjectPanel extends JPanel
     // manually painted sparklines share one instead of creating a chart and
     // a repeating Swing timer for every numeric field. They need no axis listeners.
     final Chart2D sparklineRenderer = new Chart2D();
+    private final PixelTracePainter sparklinePainter = new PixelTracePainter();
 
     // array of all sparklines that are visible
     // or near visible to the user right now
@@ -192,7 +193,7 @@ public class ObjectPanel extends JPanel
     }
 
     public void repaintWithFramelimit() {
-        if (repaintPending.compareAndSet(false, true)) {
+        if (isShowing() && repaintPending.compareAndSet(false, true)) {
             SwingUtilities.invokeLater(new Runnable() {
                 public void run()
                 {
@@ -342,9 +343,7 @@ public class ObjectPanel extends JPanel
 
         }
 
-        TracePainterDisc markerPainter = new TracePainterDisc();
-        markerPainter.setDiscSize(2);
-        trace.addTracePainter(markerPainter);
+        trace.setTracePainter(new PixelTracePainter(trace));
     }
 
     StreamingTrace createDetailedTrace(final SparklineData data)
@@ -354,6 +353,9 @@ public class ObjectPanel extends JPanel
 
         final StreamingTrace trace = new StreamingTrace(chartData.detailedSparklineChartSize,
                 name + ": " + data.fullName);
+        // A device-pixel hairline avoids expanding thousands of tiny segments
+        // into stroked polygons on high-DPI displays.
+        trace.setStroke(new BasicStroke(0));
         final Subscription subscription = new Subscription(data.path, trace);
         // Seed the detailed view with the sampled history already on screen.
         ITrace2D sparkline = data.trace;
@@ -399,6 +401,12 @@ public class ObjectPanel extends JPanel
         int nextsection = 0;
 
         int collapse_depth = 0;
+        int clipTop, clipBottom;
+
+        boolean rowVisible()
+        {
+            return y + 2 >= clipTop && y - textheight <= clipBottom;
+        }
 
         public int beginSection(String type, String name, String value)
         {
@@ -519,6 +527,10 @@ public class ObjectPanel extends JPanel
             if (collapse_depth > 0)
                 return;
 
+            if (!rowVisible()) {
+                y += textheight;
+                return;
+            }
             Font of = g.getFont();
             if (isstatic)
                 g.setFont(of.deriveFont(Font.ITALIC));
@@ -600,7 +612,7 @@ public class ObjectPanel extends JPanel
 
             // draw the graph
 
-            if (!Double.isNaN(value))
+            if (Double.isFinite(value))
             {
                 SparklineData data = cs.sparklines.get(name);
 
@@ -712,6 +724,8 @@ public class ObjectPanel extends JPanel
 
             g2.setColor(lineColor);
 
+            PixelTracePainter painter = sparklinePainter;
+            painter.startPaintIteration(g);
             boolean first = true;
 
             double lastX = 0, lastY = 0, thisX, thisY;
@@ -731,7 +745,8 @@ public class ObjectPanel extends JPanel
 
                     if (thisX >= x && lastX >= x)
                     {
-                        g2.drawLine((int)lastX, (int)lastY, (int)thisX, (int)thisY);
+                        painter.paintPoint((int)lastX, (int)lastY,
+                                (int)thisX, (int)thisY, g, point);
                     }
                     lastX = thisX;
                     lastY = thisY;
@@ -739,6 +754,7 @@ public class ObjectPanel extends JPanel
 
                 if (!iter.hasNext())
                 {
+                    painter.endPaintIteration(g);
                     // this is the last point, bold it
                     g2.setColor(pointColor);
                     g2.fillOval((int)lastX - 1, (int)lastY - 1, 3, 3);
@@ -869,7 +885,9 @@ public class ObjectPanel extends JPanel
         Graphics2D g2 = (Graphics2D) g;
 
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
-                RenderingHints.VALUE_ANTIALIAS_ON);
+                RenderingHints.VALUE_ANTIALIAS_OFF);
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+                RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
         int width = getWidth(), height = getHeight();
         g.setColor(Color.white);
@@ -884,6 +902,14 @@ public class ObjectPanel extends JPanel
         ps.g = g;
         ps.fm = fm;
         ps.textheight = 15;
+        Rectangle clip = g.getClipBounds();
+        if (clip == null)
+            clip = new Rectangle(0, 0, width, height);
+        if (scrollViewport != null)
+            clip = scrollViewport.getViewRect();
+        ps.clipTop = clip.y;
+        ps.clipBottom = clip.y + clip.height;
+        visibleSparklines.clear();
         ps.y = ps.textheight;
         ps.indent_level=1;
         ps.x[0] = 0;
@@ -893,13 +919,24 @@ public class ObjectPanel extends JPanel
 
         currentDrawNumber ++;
 
-        int previousNumSections = sections.size();
-
         if (o != null)
             paintRecurse(g, ps, "", o.getClass(), o, false, -1, "",
                     new ArrayList<Object>());
 
         sections.subList(ps.nextsection, sections.size()).clear();
+
+        // Keep a small scroll-back cache, plus every selected detailed signal.
+        // Otherwise visiting a large array eventually retains a history for
+        // every row and exhausts the launcher's bounded Java heap.
+        Iterator<SparklineData> cached = sparklinesByPath.values().iterator();
+        while (sparklinesByPath.size() > 512 && cached.hasNext()) {
+            SparklineData data = cached.next();
+            if (data.detailedTrace == null && !visibleSparklines.contains(data)) {
+                if (data.section.sparklines.get(data.name) == data)
+                    data.section.sparklines.remove(data.name);
+                cached.remove();
+            }
+        }
 
         ps.finish();
         if (ps.y != lastheight) {
@@ -907,14 +944,6 @@ public class ObjectPanel extends JPanel
             invalidate();
             if (getParent() != null)
                 getParent().validate();
-        }
-
-        HashSet<SparklineData> previouslyVisible = new HashSet<SparklineData>(visibleSparklines);
-        updateVisibleSparklines(scrollViewport);
-        if (previousNumSections != sections.size() || !previouslyVisible.equals(visibleSparklines)) {
-            // if the number of sections has changed, the system that figures out
-            // what to draw based on user view needs to rerun to update
-            repaint();
         }
     }
 
@@ -931,6 +960,11 @@ public class ObjectPanel extends JPanel
             // This is our common case...
             Section cs = sections.get(section);
             SparklineData data = sparklinesByPath.get(fullName);
+
+            if (data == null && (ps.collapse_depth > 0 || !ps.rowVisible())) {
+                if (ps.collapse_depth == 0) ps.y += ps.textheight;
+                return;
+            }
 
             if (data == null)
             {
@@ -957,8 +991,9 @@ public class ObjectPanel extends JPanel
             data.ymin = ps.y - ps.textheight + text_below_line_height;
             data.ymax = ps.y + text_below_line_height;
 
-            if (visibleSparklines.contains(data))
+            if (ps.collapse_depth == 0 && ps.rowVisible())
             {
+                visibleSparklines.add(data);
                 ps.drawStringsAndGraph(cls, name, o, isstatic, section);
 
             } else {
@@ -986,13 +1021,28 @@ public class ObjectPanel extends JPanel
             int sz = Array.getLength(o);
             int sec = ps.beginSection(cls.getComponentType()+"[]", name+"["+sz+"]", "");
 
-            for (int i = 0; i < sz; i++) {
+            // Primitive arrays have fixed-height rows. Jump directly to the
+            // visible slice without boxing, formatting, or caching hidden data.
+            int first = 0, end = sz;
+            if (cls.getComponentType().isPrimitive()) {
+                if (ps.collapse_depth > 0) {
+                    end = 0;
+                } else {
+                    first = Math.min(sz, Math.max(0, (ps.clipTop - ps.y - 2) / ps.textheight));
+                    end = Math.min(sz, Math.max(first,
+                        (ps.clipBottom - ps.y) / ps.textheight + 2));
+                    ps.y += first * ps.textheight;
+                }
+            }
+            for (int i = first; i < end; i++) {
                 path.add(i);
                 paintRecurse(g, ps, name+"["+i+"]", cls.getComponentType(), Array.get(o, i),
                         isstatic, sec, fullName+"["+i+"]", path);
                 path.remove(path.size() - 1);
             }
 
+            if (cls.getComponentType().isPrimitive() && ps.collapse_depth == 0)
+                ps.y += (sz - end) * ps.textheight;
             ps.endSection(sec);
 
         } else {
@@ -1031,7 +1081,7 @@ public class ObjectPanel extends JPanel
 
     private Trace2DLtd initSparklineTrace(String name)
     {
-        Trace2DLtd trace = new Trace2DLtd(chartData.sparklineChartSize, name);
+        Trace2DLtd trace = new StreamingTrace(chartData.sparklineChartSize, name);
         trace.setRenderer(sparklineRenderer);
         return trace;
     }
@@ -1091,11 +1141,12 @@ public class ObjectPanel extends JPanel
          */
         public void mouseMoved(MouseEvent e)
         {
-            // check to see if we are hovering over any rows of data
+            Section oldSection = currentlyHoveringSection;
+            String oldName = currentlyHoveringName;
             doSparklineInteraction(e);
-
-            // repaint in case the hovering changed
-            repaint();
+            if (oldSection != currentlyHoveringSection ||
+                    !Objects.equals(oldName, currentlyHoveringName))
+                repaint();
         }
     }
 

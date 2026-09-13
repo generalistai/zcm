@@ -14,6 +14,15 @@ using the `zcm-spy` tool. Note that you must have your types "compiled" into a
 java jar and that jar must be listed in your `CLASSPATH` for `zcm-spy` to be able
 to decode messages.
 
+In a detailed chart, use the mouse wheel to zoom around the pointer. Hold **Shift**
+to zoom only X (time), or **Ctrl** to zoom only Y (including separate Y axes).
+Holding both modifiers zooms both axes. Drag to pan; double-click to reset all axes.
+An axis you do not zoom keeps its existing automatic scaling.
+
+Detailed traces show small square sample markers. Zoomed-out traces draw at most
+one marker per horizontal chart pixel; zooming in reveals each separated sample.
+The line still preserves signal extrema, and the full sample history is retained.
+
 Detailed charts capture every finite numeric sample received after the chart is opened,
 independently of inspector repaints, scrolling, or minimizing the inspector.
 The small sparklines show samples at the inspector's refresh rate. Detailed charts
