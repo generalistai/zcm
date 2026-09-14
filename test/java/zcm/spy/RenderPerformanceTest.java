@@ -35,95 +35,63 @@ public class RenderPerformanceTest
 
     private static void paint(ObjectPanel panel, Graphics2D g, int top)
     {
-        Graphics2D copy = (Graphics2D)g.create();
-        copy.translate(0, -top);
-        copy.setClip(0, top, 1000, 600);
-        panel.paint(copy);
-        copy.dispose();
+        panel.refreshView();
+        MessageInspectorTest.layout(panel);
+        panel.tableScroll.getViewport().setViewPosition(new Point(0, top));
+        panel.paint(g);
     }
 
-    private static void inspector(boolean benchmark)
+    static void inspector(boolean benchmark)
     {
         for (int count : new int[] {1000, 100000}) {
             ChartData charts = new ChartData(0);
             ObjectPanel panel = new ObjectPanel("LOAD", charts);
-            JViewport viewport = new JViewport();
-            viewport.setSize(1000, 600);
-            viewport.setView(panel);
-            panel.setViewport(viewport);
-            panel.setSize(1000, count * 15 + 200);
-            BufferedImage image = new BufferedImage(2000, 1200, BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = image.createGraphics();
-            g.scale(2, 2);
+            panel.setSize(1100, 700);
+            BufferedImage image = new BufferedImage(2200, 1400, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g = image.createGraphics(); g.scale(2, 2);
             StreamingTrace selected = null;
+            info.monitorenter.gui.chart.Chart2D renderer = new info.monitorenter.gui.chart.Chart2D();
             try {
                 Signals message = new Signals(count);
-                panel.setObject(message, 0);
+                panel.setObject(message, 0); panel.refreshView();
                 paint(panel, g, 0);
-                check(panel.visibleSparklines.size() < 45, "Rendered hidden array rows");
-                check(panel.sections.get(1).sparklines.size() < 45,
-                      "Allocated metadata for hidden array rows");
-                int fullHeight = panel.getPreferredSize().height;
-                check(fullHeight > count * 15, "Virtualization lost the scrollbar height");
-                ObjectPanel.SparklineData first = panel.sections.get(1).sparklines.get("signals[0]");
-                check(first != null && first.trace.getSize() == 1,
-                      "First paint requires another frame before drawing signals");
-                selected = panel.createDetailedTrace(first);
-                selected.setRenderer(panel.sparklineRenderer);
-                charts.flush();
-
-                int top = count / 2 * 15;
-                viewport.setViewPosition(new Point(0, top));
+                check(panel.histories.size() < 45, "Allocated hidden array histories");
+                check(panel.values.cachedRows() < 45, "Allocated metadata for hidden array rows");
+                check(panel.table.getRowCount() == count + 2, "Virtual table lost array elements");
+                ObjectPanel.SignalData first = panel.histories.get("signals[0]");
+                check(first != null && first.history.size == 1, "Initial visible sample missing");
+                selected = panel.createDetailedTrace(first); selected.setRenderer(renderer); charts.flush();
+                int top = (count / 2 + 1) * panel.table.getRowHeight();
                 paint(panel, g, top);
-                check(panel.sections.get(1).sparklines.containsKey("signals[" + count / 2 + "]"),
-                      "Scrolled-to array element is missing");
-                check(!panel.visibleSparklines.contains(first), "Scrolled-away row is still interactive");
-                check(fullHeight == panel.getPreferredSize().height, "Scrolling changed layout height");
+                check(panel.histories.containsKey("signals[" + count / 2 + "]"), "Scrolled-to element missing");
+                check(panel.table.getRowCount() == count + 2, "Scrolling changed row count");
                 for (int i = 1; i <= 100; i++) {
-                    message = new Signals(count);
-                    message.signals[0] = i;
-                    panel.setObject(message, i);
+                    message = new Signals(count); message.signals[0] = i; panel.setObject(message, i);
                 }
                 charts.flush();
-                check(selected.getSize() == 101 && selected.getMaxY() == 100,
-                      "Offscreen detailed chart lost full-rate samples");
-
+                check(selected.getSize() == 101 && selected.getMaxY() == 100, "Offscreen chart lost full-rate samples");
                 if (count == 100000) {
-                    for (int i = 1; i <= 40; i++) {
-                        int scroll = i * 50 * 15;
-                        viewport.setViewPosition(new Point(0, scroll));
-                        paint(panel, g, scroll);
-                    }
-                    check(panel.sparklinesByPath.size() <= 512,
-                          "Scrolling retains unbounded sparkline history");
-                    check(panel.sparklinesByPath.get("signals[0]") == first,
-                          "Cache eviction discarded an active detailed signal");
+                    for (int i = 1; i <= 40; i++) paint(panel, g, i * 50 * panel.table.getRowHeight());
+                    check(panel.histories.size() <= 512, "Unbounded inactive history cache");
+                    check(panel.selectedSignals.get("signals[0]") == first, "Cache eviction discarded an active signal");
                 }
-
-                panel.setObject(new Signals(2), 101);
-                viewport.setViewPosition(new Point(0, 0));
-                paint(panel, g, 0);
-                check(panel.getPreferredSize().height < 200, "Array shrink left stale layout");
-
+                panel.setObject(new Signals(2), 101); paint(panel, g, 0);
+                check(panel.table.getRowCount() == 4, "Array shrink left stale rows");
                 if (benchmark) {
                     message = new Signals(count);
                     for (int i = 0; i < count; i++) message.signals[i] = Math.sin(i);
                     for (int i = 0; i < 520; i++) {
-                        panel.setObject(message, 1000 + i * 33000L);
-                        paint(panel, g, 0);
+                        panel.setObject(message, 1000 + i * 33000L); paint(panel, g, 0);
                     }
                     long start = System.nanoTime();
                     for (int i = 0; i < 100; i++) {
-                        panel.setObject(message, 1000 + (i + 520) * 33000L);
-                        paint(panel, g, 0);
+                        panel.setObject(message, 1000 + (i + 520) * 33000L); paint(panel, g, 0);
                     }
-                    System.out.printf("Inspector: %,d signals, 2x, %.2f ms/frame%n",
-                                      count, (System.nanoTime() - start) / 1e8);
+                    System.out.printf("Inspector: %,d signals, 2x, %.2f ms/frame%n", count, (System.nanoTime() - start) / 1e8);
                 }
             } finally {
                 if (selected != null) charts.stopTrace(selected);
-                g.dispose();
-                panel.sparklineRenderer.destroy();
+                g.dispose(); panel.dispose(); renderer.destroy();
             }
         }
     }

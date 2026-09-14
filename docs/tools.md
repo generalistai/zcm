@@ -14,6 +14,33 @@ using the `zcm-spy` tool. Note that you must have your types "compiled" into a
 java jar and that jar must be listed in your `CLASSPATH` for `zcm-spy` to be able
 to decode messages.
 
+Double-click a channel to open its message inspector. A scrolling
+**Field / Type / Value / History** table shows the complete decoded message.
+The main table expands arrays and embedded objects immediately: array elements
+and nested fields are indented beneath their parents. Long arrays scroll without
+creating a widget or history buffer for every element. Select an array or one of
+its elements, enter an **Array index**, and press **Go** to jump directly within
+that array. The other message fields stay expanded in the same table.
+
+The inspector supports all generated ZCM field types, including booleans, strings,
+signed integers, floating-point values, bytes, bitfields, embedded messages, and
+fixed or variable arrays of any dimension. Integer text preserves all 64 bits.
+Bytes show signed, unsigned, and hexadecimal forms because Java uses the same
+type for ZCM `byte` and `int8_t`. Nulls, unavailable elements, and nonfinite values
+are explicit. Constants remain visible but are not live signals.
+
+Select numeric or boolean rows and choose **Plot**, **New chart**, or **New Y axis**;
+double-clicking a numeric value or clicking its history also plots it. Boolean
+charts use 0 and 1. **Copy value** (**Ctrl+C**) copies the full value, including
+strings longer than the table preview; **Ctrl+Shift+C** copies the field path.
+**View value** opens a captured value in a selectable text window. These actions
+are also available from the row's context menu.
+
+Spy uses the desktop's Swing look and feel when available, with Nimbus as a
+fallback. Labels and channel names retain the normal UI font; numeric values
+and chart readouts use a fixed-width font. An explicit `swing.defaultlaf` Java
+property overrides the automatic theme choice.
+
 In a detailed chart, use the mouse wheel to zoom around the pointer. Hold **Shift**
 to zoom only X (time), or **Ctrl** to zoom only Y (including separate Y axes).
 Holding both modifiers zooms both axes. Drag to pan; double-click to reset all axes.
@@ -43,7 +70,7 @@ The detailed chart toolbar provides:
   Mark **Favorite** to save a signal across sessions, and use **Favorites only**
   to find it later. **Refresh** discovers new channels and array elements.
   Search runs in the background and displays at most 2,000 matches; narrow the
-  query when the result limit is reached. Only numeric fields in received,
+  query when the result limit is reached. Numeric and boolean fields in received,
   decoded messages are available. A signal already plotted elsewhere brings
   its existing chart forward.
 

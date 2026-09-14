@@ -65,12 +65,12 @@ final class SignalCatalog
                   IdentityHashMap<Object, Boolean> ancestors) {
             if (stopped()) return;
             if (value == null) return;
-            if (value instanceof Number) {
+            if (MessageValue.plottable(value)) {
                 String id = channel.name + "\t" + name;
                 if (onlyFavorites && !favorites.contains(id)) return;
                 String text = id.toLowerCase(Locale.ROOT);
                 for (String word : words) if (!text.contains(word)) return;
-                result.signals.add(new Signal(channel, name, path.toArray(), ((Number)value).doubleValue()));
+                result.signals.add(new Signal(channel, name, path.toArray(), MessageValue.number(value)));
                 return;
             }
             if (path.size() >= 32) { result.limited = true; return; }

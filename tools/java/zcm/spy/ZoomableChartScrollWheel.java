@@ -324,6 +324,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
 
     private void paintCursors(Graphics2D g)
     {
+        g.setFont(javax.swing.UIManager.getFont("Label.font"));
         g.setStroke(new BasicStroke(0));
         paintCursor(g, cursorTime, new Color(100, 100, 100), "t");
         paintCursor(g, cursorA, new Color(30, 90, 210), "A");
@@ -381,6 +382,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
      */
     public ZoomableChartScrollWheel(ChartData chartData)
     {
+        setFont(SpyFonts.monospace(getFont()));
         this.addMouseWheelListener(new MyMouseWheelListener(this));
         
         this.getAxisX().setPaintGrid(true);

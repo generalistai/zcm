@@ -48,6 +48,8 @@ public class ChartStreamingTest
 
     private static void paint(ObjectPanel panel)
     {
+        panel.refreshView();
+        MessageInspectorTest.layout(panel);
         BufferedImage image = new BufferedImage(1300, 1300, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = image.createGraphics();
         try {
@@ -57,13 +59,12 @@ public class ChartStreamingTest
         }
     }
 
-    private static ObjectPanel.SparklineData field(ObjectPanel panel, String path)
+    private static ObjectPanel.SignalData field(ObjectPanel panel, String path)
     {
-        for (ObjectPanel.Section section : panel.sections)
-            for (ObjectPanel.SparklineData data : section.sparklines.values())
-                if (path.equals(data.fullName))
-                    return data;
-        throw new AssertionError("Missing field " + path);
+        MessageValue.Path selected = MessageInspectorTest.path(panel.values.container, path);
+        panel.scrollToPath(selected);
+        paint(panel);
+        return panel.signal(selected);
     }
 
     private static void checkSequence(ITrace2D trace, int first, int last, int offset, int sign)
@@ -92,7 +93,7 @@ public class ChartStreamingTest
             paint(panel);
             String[] paths = {"left.value", "right.value", "children[1].value", "matrix[0][1]", "tail"};
             for (String path : paths) {
-                ObjectPanel.SparklineData data = field(panel, path);
+                ObjectPanel.SignalData data = field(panel, path);
                 // No window has received focus yet. This also exercises adding
                 // traces to the existing chart and to separate Y axes.
                 panel.displayDetailedChart(data, false, !traces.isEmpty());
@@ -132,7 +133,7 @@ public class ChartStreamingTest
             paint(panel);
             charts.flush();
             check(traces.get(0).getSize() == 10001, "Repainting duplicated detailed samples");
-            check(field(panel, "left.value").trace.getSize() == 2,
+            check(field(panel, "left.value").history.size == 2,
                     "Sparkline collected full-rate data");
 
             // Shrinking arrays changes the inspector's section numbers. Cached
@@ -144,7 +145,6 @@ public class ChartStreamingTest
             panel.setObject(shortMessage, 4000);
             paint(panel);
             paint(panel);
-            panel.sections.get(0).collapsed = true;
             panel.setObject(new Message(10002), 4001);
             paint(panel);
             charts.flush();
@@ -160,7 +160,6 @@ public class ChartStreamingTest
             charts.flush();
             stopped.flush();
             check(stopped.getSize() == 10002, "Closed chart kept receiving data");
-            panel.sections.get(0).collapsed = false;
             paint(panel);
             paint(panel);
             StreamingTrace reopened = panel.createDetailedTrace(field(panel, "left.value"));
@@ -185,7 +184,7 @@ public class ChartStreamingTest
                 charts.stopTrace(trace);
             detail.destroy();
             movedChart.destroy();
-            panel.sparklineRenderer.destroy();
+            panel.dispose();
         }
     }
 

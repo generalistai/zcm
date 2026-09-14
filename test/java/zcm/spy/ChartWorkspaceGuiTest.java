@@ -45,6 +45,7 @@ public class ChartWorkspaceGuiTest
     public static void main(String[] args) throws Exception {
         try {
             SwingUtilities.invokeAndWait(() -> {
+                SpyAppearance.configure();
                 ChannelData channel = new ChannelData(); channel.name = "SYNTHETIC_GUI_TEST";
                 channel.last = new ChartWorkspaceTest.Message();
                 inspector = new ObjectPanel(channel.name, data); inspector.setObject(channel.last, 0);
@@ -98,7 +99,7 @@ public class ChartWorkspaceGuiTest
         } finally {
             SwingUtilities.invokeAndWait(() -> {
                 for (Window window : Window.getWindows()) window.dispose();
-                if (inspector != null) inspector.sparklineRenderer.destroy();
+                if (inspector != null) inspector.dispose();
             });
         }
         System.exit(0);

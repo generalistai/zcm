@@ -58,6 +58,7 @@ final class SignalPicker extends JDialog
         });
         onlyFavorites.addActionListener(e -> search());
         JTable table = new JTable(model);
+        table.getColumnModel().getColumn(4).setCellRenderer(SpyFonts.numbers());
         table.setRowHeight(Math.max(23, table.getFontMetrics(table.getFont()).getHeight() + 6));
         table.setFillsViewportHeight(true);
         table.getColumnModel().getColumn(0).setMaxWidth(50);

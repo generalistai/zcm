@@ -237,7 +237,7 @@ public class ChartWorkspaceTest
             data.stopTrace(trace); chart.detachTrace(trace);
             StreamingTrace reopened = inspector.traceForSignal(signal); chart.addTrace(reopened);
             check(reopened != trace, "Picker cleanup did not release subscription");
-        } finally { dispose(data); inspector.sparklineRenderer.destroy(); }
+        } finally { dispose(data); inspector.dispose(); }
     }
 
     private static void favorites() throws Exception {

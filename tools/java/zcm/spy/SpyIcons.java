@@ -8,13 +8,14 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import javax.swing.*;
+import javax.swing.plaf.synth.*;
 
 /** Small vector icons follow Java's display transform, including fractional scales. */
 final class SpyIcons
 {
     enum Symbol {
         PAUSE, PLAY, LIVE, LINK, CURSOR_A, CURSOR_B, CLEAR_CURSORS,
-        ADD, SEARCH, REFRESH, SELECT_ALL, CLEAR, CLOSE, FAVORITE, FAVORITED
+        ADD, SEARCH, REFRESH, SELECT_ALL, CLEAR, CLOSE, FAVORITE, FAVORITED, COPY
     }
 
     private static final Color TEAL = new Color(0x168C9C);
@@ -147,6 +148,9 @@ final class SpyIcons
                     outlines.add(path(6, 6, 18, 18)); outlines.add(path(18, 6, 6, 18)); break;
                 case FAVORITE: outlines.add(star()); break;
                 case FAVORITED: fills.add(star()); break;
+                case COPY:
+                    outlines.add(new RoundRectangle2D.Double(8, 8, 13, 13, 2, 2));
+                    outlines.add(path(5, 16, 3, 16, 3, 3, 16, 3, 16, 5)); break;
             }
         }
 
@@ -160,13 +164,20 @@ final class SpyIcons
                 g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                 g.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 Color color = component == null ? new Color(0x334155) : component.getForeground();
+                // GTK/Nimbus can resolve text color from style state instead of getForeground().
+                Object ui = component instanceof AbstractButton ? ((AbstractButton)component).getUI() :
+                    component instanceof JLabel ? ((JLabel)component).getUI() : null;
+                if (ui instanceof SynthUI) {
+                    SynthContext context = ((SynthUI)ui).getContext((JComponent)component);
+                    color = context.getStyle().getColor(context, ColorType.TEXT_FOREGROUND);
+                }
                 if (symbol == Symbol.LIVE ||
                     symbol == Symbol.LINK && component instanceof AbstractButton && ((AbstractButton)component).isSelected()) color = TEAL;
                 if (symbol == Symbol.CURSOR_A) color = new Color(30, 90, 210);
                 if (symbol == Symbol.CURSOR_B) color = new Color(190, 90, 0);
                 if (symbol == Symbol.FAVORITED) color = GOLD;
                 if (component != null && !component.isEnabled()) {
-                    Color disabled = UIManager.getColor("Label.disabledForeground");
+                    Color disabled = ui instanceof SynthUI ? null : UIManager.getColor("Label.disabledForeground");
                     if (disabled != null) color = disabled;
                     g.setComposite(AlphaComposite.SrcOver.derive(.55f));
                 }

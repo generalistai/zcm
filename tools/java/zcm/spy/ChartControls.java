@@ -17,7 +17,10 @@ final class ChartControls extends JPanel
     private final JComboBox<String> window = new JComboBox<String>(
         new String[] {"Last 5 s", "Last 30 s", "Last 2 min", "All retained"});
     private final JLabel state = new JLabel();
-    private final JLabel cursors = new JLabel("Move over the plot to inspect samples.");
+    private final JPanel cursors = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+    private final JLabel cursorHint = new JLabel();
+    private final JLabel[] cursorNumbers = {new JLabel(), new JLabel(), new JLabel(), new JLabel()};
+    private final JLabel retained = new JLabel();
     private final LegendModel model = new LegendModel();
     private final JTable table = new JTable(model);
     private final JPanel legend = new JPanel(new BorderLayout());
@@ -28,6 +31,15 @@ final class ChartControls extends JPanel
     {
         super(new BorderLayout(0, 4));
         this.chart = chart;
+        for (int column = 4; column <= 7; column++) table.getColumnModel().getColumn(column).setCellRenderer(SpyFonts.numbers());
+        retained.setFont(SpyFonts.monospace(retained.getFont()));
+        cursors.add(cursorHint);
+        String[] labels = {"t: ", "A: ", "B: ", "Δt: "};
+        for (int i = 0; i < cursorNumbers.length; i++) {
+            cursors.add(new JLabel(labels[i]));
+            cursorNumbers[i].setFont(SpyFonts.monospace(cursorNumbers[i].getFont()));
+            cursors.add(cursorNumbers[i]); cursors.add(new JLabel(" s     "));
+        }
         setBorder(BorderFactory.createEmptyBorder(5, 5, 3, 5));
         JPanel rows = new JPanel(new GridLayout(0, 1, 0, 4));
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
@@ -43,6 +55,7 @@ final class ChartControls extends JPanel
         link.setToolTipText("Join other linked charts for time navigation, pause/live, and shared cursors. Y ranges stay independent.");
         link.addActionListener(e -> { if (!updating) chart.setTimeLinked(link.isSelected()); });
         toolbar.add(state);
+        toolbar.add(retained); toolbar.add(new JLabel("s retained"));
         JPanel measurements = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         button(measurements, "Set A", SpyIcons.Symbol.CURSOR_A, () -> chart.armCursor(1)).setToolTipText("Click the plot to place cursor A; or press A at the pointer.");
         button(measurements, "Set B", SpyIcons.Symbol.CURSOR_B, () -> chart.armCursor(2)).setToolTipText("Click the plot to place cursor B; or press B at the pointer.");
@@ -124,8 +137,8 @@ final class ChartControls extends JPanel
             SpyIcons.decorate(pause, chart.isPaused() ? SpyIcons.Symbol.PLAY : SpyIcons.Symbol.PAUSE);
             link.setSelected(chart.isTimeLinked());
             for (int i = 0; i < windows.length; i++) if (windows[i] == chart.getWindowSeconds()) window.setSelectedIndex(i);
-            state.setText(String.format(Locale.ROOT, "%s · %.1f s retained",
-                chart.isPaused() ? "Paused" : chart.isFollowing() ? "Live" : "Browsing", chart.retainedSeconds()));
+            state.setText((chart.isPaused() ? "Paused" : chart.isFollowing() ? "Live" : "Browsing") + " ·");
+            retained.setText(String.format(Locale.ROOT, "%.1f", chart.retainedSeconds()));
         } finally { updating = false; }
         refreshReadouts();
     }
@@ -134,11 +147,10 @@ final class ChartControls extends JPanel
 
     void refreshReadouts()
     {
-        cursors.setText("t: " + number(chart.getCursorTime()) + " s     A: " + number(chart.getCursorA()) +
-                       " s     B: " + number(chart.getCursorB()) + " s     Δt: " +
-                       number(chart.getCursorB() - chart.getCursorA()) + " s");
-        if (chart.getArmedCursor() != 0)
-            cursors.setText("Click the plot to place cursor " + (chart.getArmedCursor() == 1 ? "A" : "B") + ".   " + cursors.getText());
+        double[] times = {chart.getCursorTime(), chart.getCursorA(), chart.getCursorB(), chart.getCursorB() - chart.getCursorA()};
+        for (int i = 0; i < times.length; i++) cursorNumbers[i].setText(number(times[i]));
+        cursorHint.setText(chart.getArmedCursor() == 0 ? "" : "Click the plot to place cursor " +
+            (chart.getArmedCursor() == 1 ? "A" : "B") + ".   ");
         if (!table.isEditing() && !model.traces.isEmpty()) model.fireTableRowsUpdated(0, model.traces.size() - 1);
     }
 

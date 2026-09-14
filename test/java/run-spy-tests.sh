@@ -10,7 +10,15 @@ fi
 classes=$(mktemp -d)
 trap 'rm -rf "$classes"' EXIT
 mapfile -t sources < <(find "$root/tools/java/zcm" "$root/zcm/java/zcm" -name '*.java')
+if [[ -x "$root/build/gen/zcm-gen" ]]; then
+    "$root/build/gen/zcm-gen" -j --jpath "$classes/generated" --jpkgprefix inspector_test \
+        "$root/test/types/example_t.zcm" "$root/test/types/bitfield_t.zcm"
+    mapfile -t generated < <(find "$classes/generated" -name '*.java')
+    sources+=("${generated[@]}")
+fi
 javac -cp "$chart_jar" -d "$classes" "${sources[@]}" \
+    "$root/test/java/zcm/spy/MessageInspectorTest.java" \
+    "$root/test/java/zcm/spy/MessageInspectorGuiTest.java" \
     "$root/test/java/zcm/spy/ChartStreamingTest.java" \
     "$root/test/java/zcm/spy/ChartWorkspaceTest.java" \
     "$root/test/java/zcm/spy/ChartWorkspaceGuiTest.java" \
@@ -56,11 +64,14 @@ check_dpi 192 192 automatic -Dos.name=Windows
 SPY_TEST_MONITORS='0: +*eDP-1 1920/301x1200/188+0+0 eDP-1' check_dpi invalid 96 automatic
 SPY_TEST_MONITORS='0: +*eDP-1 3840/301x2400/188+0+0 eDP-1' check_dpi invalid 96 3
 
+java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.MessageInspectorTest
 java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.ChartStreamingTest "$@"
 java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.RenderPerformanceTest "$@"
 java -Djava.awt.headless=true -Djava.util.prefs.userRoot="$classes/prefs" -ea \
     -cp "$classes:$chart_jar" zcm.spy.ChartWorkspaceTest "$@"
 if [[ ${SPY_GUI_TESTS:-0} == 1 ]]; then
+    java -Djava.util.prefs.userRoot="$classes/gui-prefs" -ea \
+        -cp "$classes:$chart_jar" zcm.spy.MessageInspectorGuiTest "${SPY_INSPECTOR_SCREENSHOT:-/tmp/spy-message-inspector.png}"
     java -Djava.util.prefs.userRoot="$classes/gui-prefs" -ea \
         -cp "$classes:$chart_jar" zcm.spy.ChartWorkspaceGuiTest
 fi

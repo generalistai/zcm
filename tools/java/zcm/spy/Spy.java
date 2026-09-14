@@ -66,6 +66,10 @@ public class Spy
         //    sortedChannelTableModel.addMouseListenerToHeaderInTable(channelTable);
         channelTableModel.setTableHeader(channelTable.getTableHeader());
         channelTableModel.setSortingStatus(0, TableSorter.ASCENDING);
+        for (int column = 2; column < channelTable.getColumnCount(); column++)
+            channelTable.getColumnModel().getColumn(column).setCellRenderer(SpyFonts.numbers());
+        channelTable.setRowHeight(Math.max(channelTable.getFontMetrics(channelTable.getFont()).getHeight(),
+            channelTable.getFontMetrics(SpyFonts.monospace(channelTable.getFont())).getHeight()) + 2);
 
         handlers = new ZCMTypeDatabase();
 
@@ -81,6 +85,7 @@ public class Spy
         JFrame jif = new JFrame(title);
         SpyIcons.window(jif);
         SpyIcons.decorate(clearButton, SpyIcons.Symbol.CLEAR);
+        clearButton.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
         jif.setLayout(new BorderLayout());
         jif.add(channelTable.getTableHeader(), BorderLayout.PAGE_START);
         // XXX weird bug, if clearButton is added after JScrollPane, we get an error.
@@ -255,20 +260,11 @@ public class Spy
             //    cd.viewer = new ObjectViewer(cd.name, cd.cls, null);
             cd.viewerFrame.setLayout(new BorderLayout());
 
-            // default scroll speed is too slow, so increase it
-            JScrollPane viewerScrollPane = new JScrollPane(cd.viewer);
-            viewerScrollPane.getVerticalScrollBar().setUnitIncrement(16);
-            
-            // we need to tell the viewer what its viewport is so that it can
-            // make smart decisions about which elements are in view of the user
-            // so it can avoid drawing items outside the view
-            cd.viewer.setViewport(viewerScrollPane.getViewport());
-            
-            cd.viewerFrame.add(viewerScrollPane, BorderLayout.CENTER);
+            cd.viewerFrame.add(cd.viewer, BorderLayout.CENTER);
             
             //jdp.add(cd.viewerFrame);
 
-            cd.viewerFrame.setSize(650,400);
+            ZoomableChartScrollWheel.fitToScreen(cd.viewerFrame, 1100, 700);
             cd.viewerFrame.setLocationByPlatform(true);
             cd.viewerFrame.setVisible(true);
         } else {
@@ -571,6 +567,7 @@ public class Spy
     {
         // Must run before constructing any Swing components or querying AWT.
         SpyUiScale.configure();
+        SpyAppearance.configure();
 
         // check if the JRE is supplied by gcj, and warn the user if it is.
         if(System.getProperty("java.vendor").indexOf("Free Software Foundation") >= 0) {
