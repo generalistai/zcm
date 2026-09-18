@@ -42,9 +42,17 @@ public class Spy
                 {
                     tableRefreshPending.set(false);
                     int row = channelTable.getSelectedRow();
-                    _channelTableModel.fireTableDataChanged();
-                    if (row >= 0 && row < channelTable.getRowCount())
-                        channelTable.setRowSelectionInterval(row, row);
+                    ChannelData selected = row < 0 || row >= channelTable.getRowCount() ? null :
+                        _channelTableModel.channelAt(channelTableModel.modelIndex(row));
+                    ArrayList<ChannelData> snapshot;
+                    synchronized (channelList) { snapshot = new ArrayList<ChannelData>(channelList); }
+                    _channelTableModel.setChannels(snapshot);
+                    int modelRow = selected == null ? -1 : _channelTableModel.indexOf(selected);
+                    if (modelRow >= 0) for (int viewRow = 0; viewRow < channelTable.getRowCount(); viewRow++) {
+                        if (channelTableModel.modelIndex(viewRow) == modelRow) {
+                            channelTable.setRowSelectionInterval(viewRow, viewRow); break;
+                        }
+                    }
                 }
             });
         }
@@ -66,21 +74,23 @@ public class Spy
         //    sortedChannelTableModel.addMouseListenerToHeaderInTable(channelTable);
         channelTableModel.setTableHeader(channelTable.getTableHeader());
         channelTableModel.setSortingStatus(0, TableSorter.ASCENDING);
-        for (int column = 2; column < channelTable.getColumnCount(); column++)
-            channelTable.getColumnModel().getColumn(column).setCellRenderer(SpyFonts.numbers());
-        channelTable.setRowHeight(Math.max(channelTable.getFontMetrics(channelTable.getFont()).getHeight(),
-            channelTable.getFontMetrics(SpyFonts.monospace(channelTable.getFont())).getHeight()) + 2);
+        // for (int column = 2; column < channelTable.getColumnCount(); column++)
+        //     channelTable.getColumnModel().getColumn(column).setCellRenderer(SpyFonts.numbers());
+        // // channelTable.setRowHeight(Math.max(channelTable.getFontMetrics(channelTable.getFont()).getHeight(),
+            // channelTable.getFontMetrics(SpyFonts.monospace(channelTable.getFont())).getHeight()) + 2);
 
         handlers = new ZCMTypeDatabase();
 
         TableColumnModel tcm = channelTable.getColumnModel();
         tcm.getColumn(0).setMinWidth(140);
         tcm.getColumn(1).setMinWidth(140);
-        tcm.getColumn(2).setMaxWidth(100);
-        tcm.getColumn(3).setMaxWidth(100);
-        tcm.getColumn(4).setMaxWidth(100);
-        tcm.getColumn(5).setMaxWidth(100);
-        tcm.getColumn(6).setMaxWidth(100);
+        tcm.getColumn(2).setMaxWidth(140);
+        tcm.getColumn(3).setMaxWidth(140);
+        for (int column = 4; column <= 6; column++) {
+            tcm.getColumn(column).setMinWidth(90);
+            tcm.getColumn(column).setPreferredWidth(90);
+            tcm.getColumn(column).setMaxWidth(140);
+        }
 
         JFrame jif = new JFrame(title);
         SpyIcons.window(jif);
@@ -116,9 +126,8 @@ public class Spy
         {
             public void actionPerformed(ActionEvent e)
             {
-                channelMap.clear();
-                channelList.clear();
-                channelTableModel.fireTableDataChanged();
+                synchronized (channelList) { channelMap.clear(); channelList.clear(); }
+                _channelTableModel.setChannels(Collections.<ChannelData>emptyList());
             }
         });
 
@@ -136,8 +145,8 @@ public class Spy
                 {
                     Point p = e.getPoint();
                     int row = rowAtPoint(p);
-
-                    ChannelData cd = channelList.get(row);
+                    ChannelData cd = _channelTableModel.channelAt(row);
+                    if (cd == null) return;
                     boolean got_one = false;
                     for (SpyPlugin plugin : plugins)
                     {
@@ -151,7 +160,7 @@ public class Spy
                     }
 
                     if (!got_one)
-                        createViewer(channelList.get(row));
+                        createViewer(cd);
                 }
             }
         });
@@ -278,87 +287,12 @@ public class Spy
         return System.nanoTime()/1000;
     }
 
-    class ChannelTableModel extends AbstractTableModel
-    {
-        public int getColumnCount()
-        {
-            return 8;
-        }
-
-        public int getRowCount()
-        {
-            return channelList.size();
-        }
-
-        public Object getValueAt(int row, int col)
-        {
-            ChannelData cd = channelList.get(row);
-            if (cd == null)
-                return "";
-
-            switch (col)
-            {
-                case 0:
-                    return cd.name;
-                case 1:
-                    if (cd.cls == null)
-                        return String.format("?? %016x", cd.fingerprint);
-
-                    String s = cd.cls.getName();
-                    return s.substring(s.lastIndexOf('.')+1);
-
-                case 2:
-                    return ""+cd.nreceived;
-                case 3:
-                    return String.format("%6.2f", cd.hz);
-                case 4:
-                    return String.format("%6.2f ms",1000.0/cd.hz); // cd.max_interval/1000.0);
-                case 5:
-                    if (cd.hz_num_hz_updates > 1 && cd.hz > 0) {
-                        return String.format("%6.2f ms",(cd.max_interval - cd.min_interval)/1000.0);
-                    } else {
-                        return " -";
-                    }
-                case 6:
-                    return String.format("%6.2f KB/s", (cd.bandwidth/1024.0));
-                case 7:
-                    return ""+cd.nerrors;
-            }
-            return "???";
-        }
-
-        public String getColumnName(int col)
-        {
-            switch (col)
-            {
-                case 0:
-                    return "Channel";
-                case 1:
-                    return "Type";
-                case 2:
-                    return "Num Msgs";
-                case 3:
-                    return "Hz";
-                case 4:
-                    return "1/Hz";
-                case 5:
-                    return "Jitter";
-                case 6:
-                    return "Bandwidth";
-                case 7:
-                    return "Undecodable";
-            }
-            return "???";
-        }
-
-    }
-
     class MySubscriber implements ZCMSubscriber
     {
         public void messageReceived(ZCM zcm, String channel, ZCMDataInputStream dins)
         {
             Object o = null;
-            ChannelData cd = channelMap.get(channel);
+            ChannelData cd = null;
             int msg_size = 0;
 
             try {
@@ -368,20 +302,22 @@ public class Spy
 
                 Class cls = handlers.getClassByFingerprint(fingerprint);
 
-                if (cd == null) {
-                    cd = new ChannelData();
-                    cd.name = channel;
-                    cd.cls = cls;
-                    cd.fingerprint = fingerprint;
-                    cd.row = channelList.size();
-
-                    synchronized(channelList) {
+                boolean added = false;
+                synchronized (channelList) {
+                    cd = channelMap.get(channel);
+                    if (cd == null) {
+                        cd = new ChannelData();
+                        cd.name = channel;
+                        cd.cls = cls;
+                        cd.fingerprint = fingerprint;
+                        cd.row = channelList.size();
                         channelMap.put(channel, cd);
                         channelList.add(cd);
-                        refreshChannelTable();
+                        added = true;
                     }
-
-                } else {
+                }
+                if (added) refreshChannelTable();
+                else {
                     if (cls != null && cd.cls != null && !cd.cls.equals(cls)) {
                         System.out.println("WARNING: Class changed for channel "+channel);
                         cd.nerrors++;
@@ -410,9 +346,9 @@ public class Spy
                     cd.viewer.setObject(o, cd.last_utime);
 
             } catch (NullPointerException ex) {
-                cd.nerrors++;
+                if (cd != null) cd.nerrors++;
             } catch (IOException ex) {
-                cd.nerrors++;
+                if (cd != null) cd.nerrors++;
                 System.out.println("Spy.messageReceived ex: "+ex);
             } catch (NoSuchMethodException ex) {
                 cd.nerrors++;
@@ -500,15 +436,15 @@ public class Spy
     int rowAtPoint(Point p)
     {
         int physicalRow = channelTable.rowAtPoint(p);
-
-        return channelTableModel.modelIndex(physicalRow);
+        return physicalRow < 0 || physicalRow >= channelTable.getRowCount() ? -1 : channelTableModel.modelIndex(physicalRow);
     }
 
     public void showPopupMenu(MouseEvent e)
     {
         Point p = e.getPoint();
         int row = rowAtPoint(p);
-        ChannelData cd = channelList.get(row);
+        ChannelData cd = _channelTableModel.channelAt(row);
+        if (cd == null) return;
         JPopupMenu jm = new JPopupMenu("Viewers");
 
         int prow = channelTable.rowAtPoint(p);
@@ -620,10 +556,10 @@ public class Spy
             }
         }
 
-        try {
-            new Spy(zcmurl, titleOptions);
-        } catch (IOException ex) {
-            System.out.println(ex);
-        }
+        final String url = zcmurl;
+        SwingUtilities.invokeLater(() -> {
+            try { new Spy(url, titleOptions); }
+            catch (IOException ex) { System.out.println(ex); }
+        });
     }
 }

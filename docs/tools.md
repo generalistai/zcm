@@ -50,17 +50,16 @@ The detailed chart toolbar provides:
 
 - **Pause / Resume** (or **Space**): freeze the displayed samples while incoming
   data continues collecting in a separate bounded buffer. Resume catches up to
-  the latest samples. **Live** also returns to following the newest data.
-- **Last 5 s**, **Last 30 s**, **Last 2 min**, and **All retained** time windows.
+  the latest samples. **Live** resumes and fits the full retained sample history.
   Panning or zooming X stops following time; zooming only Y keeps following.
   The toolbar shows the actual retained duration, which depends on message rate
-  and the sample limit. Selecting a longer window cannot recover expired data.
+  and the sample limit.
 - **Set A / Set B**: place measurement cursors by clicking the plot. Clicking
   directly places A first, then B; pressing **A** or **B** places that cursor at
   the pointer. The readout shows elapsed time between the cursors. **Clear cursors**
   (or **Esc**) removes both measurements.
 - **Link time**: enable this on each window you want to navigate together.
-  Linked charts share horizontal pan/zoom, time presets, pause/live, and cursor
+  Linked charts share horizontal pan/zoom, pause/live, and cursor
   positions. Each chart retains its own Y-axis settings. Joining adopts the
   existing group's view; disabling the button leaves that window independent.
 - **Add signals…**: search the latest decoded messages by channel and field name,

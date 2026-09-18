@@ -97,7 +97,7 @@ public class ChartWorkspaceTest
         ZoomableChartScrollWheel chart = chart(data);
         try {
             StreamingTrace trace = trace(chart, "signal", 100);
-            chart.goLive(); close(chart.getAxisX().getMin(), 94, "Initial live window");
+            chart.goLive(); close(chart.getAxisX().getMin(), 0, "Live shows all retained samples");
             close(trace.sampleAt(23.7).value, 48, "Nearest sample");
             close(trace.sampleAt(23.5).time, 23, "Equidistant cursor prefers earlier sample");
             check(trace.sampleAt(-1) == null && trace.sampleAt(100) == null && trace.sampleAt(Double.NaN) == null,
@@ -109,7 +109,7 @@ public class ChartWorkspaceTest
             data.flush();
             close(trace.getMaxX(), 99, "Pause lost the displayed snapshot");
             close(trace.sampleAt(20).value, 40, "Pause changed cursor history");
-            chart.setTimeWindow(30); close(chart.getAxisX().getMin(), 69, "Paused preset");
+            close(chart.getAxisX().getMin(), 0, "Pause moved the displayed time range");
             chart.pinCursor(1, 20); chart.pinCursor(2, 30); chart.setCursorTime(40);
             JTable legend = table(chart.controls().legendPanel());
             close(Double.parseDouble(legend.getValueAt(0, 4).toString()), 80, "Hover value");
@@ -120,9 +120,7 @@ public class ChartWorkspaceTest
             close(trace.getMaxX(), 9999, "Resume missed collected samples");
             close(trace.sampleAt(9998.4).value, 19996, "Cursor ring rollover");
             check(trace.sampleAt(20) == null, "Expired cursor returned unrelated data");
-            close(chart.getAxisX().getMin(), 9969, "Resume follows selected window");
-            chart.setTimeWindow(120); close(chart.getAxisX().getMin(), 9879, "Two minute window");
-            chart.setTimeWindow(0); close(chart.getAxisX().getMin(), 9872, "All retained");
+            close(chart.getAxisX().getMin(), 9872, "Resume fits retained history");
             trace.record(10000, 1); trace.record(10000, 2); data.flush();
             close(trace.sampleAt(10000).value, 1, "Equal timestamps choose first sample");
             chart.setCursorTime(Double.NaN);
@@ -165,9 +163,9 @@ public class ChartWorkspaceTest
             a.setPaused(true); check(b.isPaused() && peer.isPaused(), "Linked pause");
             peer.record(101, 999); data.flush(); close(peer.getMaxX(), 99, "Peer kept scrolling during pause");
             a.goLive(); data.flush(); close(a.getAxisX().getMax(), 101, "Linked resume latest sample");
-            a.setTimeWindow(0); data.flush(); close(a.getAxisX().getMin(), b.getAxisX().getMin(), "Linked all-retained start");
+            close(a.getAxisX().getMin(), b.getAxisX().getMin(), "Linked retained start");
             b.setTimeLinked(false); a.pinCursor(1, 45); close(b.getCursorA(), 30, "Unlink cursor");
-            double min = b.getAxisX().getMin(); a.setTimeWindow(30); close(b.getAxisX().getMin(), min, "Unlink range");
+            double min = b.getAxisX().getMin(); wheel(a, InputEvent.SHIFT_DOWN_MASK); close(b.getAxisX().getMin(), min, "Unlink range");
 
             a.setTraceVisible(third, false); a.solo(first);
             check(first.isVisible() && !second.isVisible() && !third.isVisible(), "Solo");
@@ -287,7 +285,7 @@ public class ChartWorkspaceTest
                 for (int j = 0; j < 15000; j++) trace.record(j / 1000.0, Math.sin(j / 20.0 + i) * (i + 1));
                 trace.flush();
             }
-            chart.setTimeWindow(0); chart.pinCursor(1, 10); chart.pinCursor(2, 12);
+            chart.goLive(); chart.pinCursor(1, 10); chart.pinCursor(2, 12);
             JPanel panel = new JPanel(new BorderLayout()); panel.add(chart.controls(), BorderLayout.NORTH);
             panel.add(chart, BorderLayout.CENTER); panel.add(chart.controls().legendPanel(), BorderLayout.SOUTH);
             panel.setSize(1100, 750); layoutTree(panel);

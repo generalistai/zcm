@@ -2,6 +2,11 @@ Run `test/java/run-spy-tests.sh` from any directory. It compiles the Java tools 
 runs the DPI, message inspector, chart, and rendering regression tests without a display or a running ZCM transport.
 Set `JCHART2D_JAR` if jchart2d is installed outside `/usr/share/java`.
 
+Channel table tests reproduce an arrival between sorting and painting, and verify
+that row counts, cell values, and click targets stay on the published snapshot.
+They cover clearing and repopulating the table, repeated sorting/painting, and
+rejection of table updates outside Swing's event thread.
+
 The tests cover collection between repaints, equal timestamps, nested fields,
 changing array lengths, subscription cleanup, concurrent collection and chart
 updates, and bounded history with correct axis limits. Add `--benchmark` to
@@ -32,7 +37,7 @@ samples at both 1x and 2x display scaling.
 Wheel tests cover Shift/Ctrl axis selection, separate Y axes, cursor anchoring,
 fractional/multiple wheel steps, and preservation of automatic scaling on untouched axes.
 
-Workspace tests cover pause/resume with buffer overflow, time presets, nearest
+Workspace tests cover pause/resume with buffer overflow, live following, nearest
 sample lookup after ring-buffer rollover, shared time navigation and cursors,
 independent Y ranges, hide/solo restoration, reassignment of shared Y axes,
 search through large arrays and nested fields, hidden inspector subscriptions,
@@ -50,6 +55,13 @@ checks selections across searches and favorites, then closes its windows.
 The inspector screenshot defaults to `/tmp/spy-message-inspector.png`; override
 it with `SPY_INSPECTOR_SCREENSHOT`.
 It does not require JNI or a running ZCM transport.
+
+`SPY_NATIVE_GUI_TESTS=1 test/java/run-spy-tests.sh` additionally exercises the
+actual Spy receiver and main window on an isolated `inproc` transport. It requires
+an X11 display and the built JNI library in `build/zcm/java`. The test covers a
+new channel arriving before its queued GUI refresh, channel selection across
+sorting, clicks below the last row, and a 10,000-message burst while clearing and
+repainting. No external publisher is needed.
 
 Spy refreshes inspectors and detailed charts at up to 30 Hz. Hidden inspectors
 do not schedule repaints. Arrays of primitive values, strings, and objects with

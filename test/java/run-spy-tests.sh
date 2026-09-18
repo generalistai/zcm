@@ -17,6 +17,7 @@ if [[ -x "$root/build/gen/zcm-gen" ]]; then
     sources+=("${generated[@]}")
 fi
 javac -cp "$chart_jar" -d "$classes" "${sources[@]}" \
+    "$root/test/java/zcm/spy/ChannelTableTest.java" \
     "$root/test/java/zcm/spy/MessageInspectorTest.java" \
     "$root/test/java/zcm/spy/MessageInspectorGuiTest.java" \
     "$root/test/java/zcm/spy/ChartStreamingTest.java" \
@@ -64,6 +65,7 @@ check_dpi 192 192 automatic -Dos.name=Windows
 SPY_TEST_MONITORS='0: +*eDP-1 1920/301x1200/188+0+0 eDP-1' check_dpi invalid 96 automatic
 SPY_TEST_MONITORS='0: +*eDP-1 3840/301x2400/188+0+0 eDP-1' check_dpi invalid 96 3
 
+java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.ChannelTableTest
 java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.MessageInspectorTest
 java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.ChartStreamingTest "$@"
 java -Djava.awt.headless=true -ea -cp "$classes:$chart_jar" zcm.spy.RenderPerformanceTest "$@"
@@ -74,4 +76,8 @@ if [[ ${SPY_GUI_TESTS:-0} == 1 ]]; then
         -cp "$classes:$chart_jar" zcm.spy.MessageInspectorGuiTest "${SPY_INSPECTOR_SCREENSHOT:-/tmp/spy-message-inspector.png}"
     java -Djava.util.prefs.userRoot="$classes/gui-prefs" -ea \
         -cp "$classes:$chart_jar" zcm.spy.ChartWorkspaceGuiTest
+fi
+if [[ ${SPY_NATIVE_GUI_TESTS:-0} == 1 ]]; then
+    java -Djava.library.path="$root/build/zcm/java" -Djava.util.prefs.userRoot="$classes/native-gui-prefs" -ea \
+        -cp "$classes:$chart_jar" zcm.spy.ChannelTableTest --gui
 fi

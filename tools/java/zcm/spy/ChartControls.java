@@ -14,8 +14,6 @@ final class ChartControls extends JPanel
     private final ZoomableChartScrollWheel chart;
     private final JToggleButton pause = new JToggleButton("Pause");
     private final JToggleButton link = new JToggleButton("Link time");
-    private final JComboBox<String> window = new JComboBox<String>(
-        new String[] {"Last 5 s", "Last 30 s", "Last 2 min", "All retained"});
     private final JLabel state = new JLabel();
     private final JPanel cursors = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
     private final JLabel cursorHint = new JLabel();
@@ -25,7 +23,6 @@ final class ChartControls extends JPanel
     private final JTable table = new JTable(model);
     private final JPanel legend = new JPanel(new BorderLayout());
     private boolean updating;
-    private final double[] windows = {5, 30, 120, 0};
 
     ChartControls(ZoomableChartScrollWheel chart)
     {
@@ -48,8 +45,6 @@ final class ChartControls extends JPanel
         pause.setToolTipText("Freeze the display while collection continues. Applies to linked charts together.");
         pause.addActionListener(e -> { if (!updating) chart.setPaused(pause.isSelected()); });
         button(toolbar, "Live", SpyIcons.Symbol.LIVE, () -> chart.goLive());
-        toolbar.add(window);
-        window.addActionListener(e -> { if (!updating) chart.setTimeWindow(windows[window.getSelectedIndex()]); });
         toolbar.add(link);
         SpyIcons.decorate(link, SpyIcons.Symbol.LINK);
         link.setToolTipText("Join other linked charts for time navigation, pause/live, and shared cursors. Y ranges stay independent.");
@@ -136,7 +131,6 @@ final class ChartControls extends JPanel
             pause.setSelected(chart.isPaused()); pause.setText(chart.isPaused() ? "Resume" : "Pause");
             SpyIcons.decorate(pause, chart.isPaused() ? SpyIcons.Symbol.PLAY : SpyIcons.Symbol.PAUSE);
             link.setSelected(chart.isTimeLinked());
-            for (int i = 0; i < windows.length; i++) if (windows[i] == chart.getWindowSeconds()) window.setSelectedIndex(i);
             state.setText((chart.isPaused() ? "Paused" : chart.isFollowing() ? "Live" : "Browsing") + " ·");
             retained.setText(String.format(Locale.ROOT, "%.1f", chart.retainedSeconds()));
         } finally { updating = false; }

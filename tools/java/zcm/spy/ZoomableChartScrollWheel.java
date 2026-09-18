@@ -58,7 +58,6 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     ChartData chartData;
     private ChartControls controls;
     private boolean paused, following, timeLinked;
-    private double windowSeconds = 5;
     private double cursorTime = Double.NaN, cursorA = Double.NaN, cursorB = Double.NaN;
     private int armedCursor;
     private final Map<ITrace2D, Boolean> beforeSolo = new LinkedHashMap<ITrace2D, Boolean>();
@@ -73,7 +72,6 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     boolean isPaused() { return paused; }
     boolean isFollowing() { return following; }
     boolean isTimeLinked() { return timeLinked; }
-    double getWindowSeconds() { return windowSeconds; }
     double getCursorTime() { return cursorTime; }
     double getCursorA() { return cursorA; }
     double getCursorB() { return cursorB; }
@@ -137,29 +135,13 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         chartData.linkView(this);
     }
 
-    void setTimeWindow(double seconds)
-    {
-        windowSeconds = Math.max(0, seconds);
-        following = true;
-        setFixedWidthXAxisFormat();
-        applyTimeWindow(chartData.latestTime(this));
-        chartData.linkView(this);
-        if (controls != null) controls.refresh();
-    }
-
-    private void applyTimeWindow(double end)
-    {
-        if (!Double.isFinite(end)) return;
-        if (windowSeconds == 0) {
-            double start = chartData.earliestTime(this);
-            if (!Double.isFinite(start)) start = end;
-            setTimeRange(start, Math.max(start + .001, end));
-        } else setTimeRange(end - windowSeconds, end);
-    }
-
     void refreshView()
     {
-        if (following && !paused) applyTimeWindow(chartData.latestTime(this));
+        if (following && !paused) {
+            double start = chartData.earliestTime(this), end = chartData.latestTime(this);
+            if (Double.isFinite(start) && Double.isFinite(end))
+                setTimeRange(start, Math.max(start + .001, end));
+        }
         if (controls != null && controls.isShowing()) controls.refresh();
     }
 
@@ -198,7 +180,6 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     void copyTimeView(ZoomableChartScrollWheel source)
     {
         following = source.following;
-        windowSeconds = source.windowSeconds;
         setTimeRange(source.getAxisX().getMin(), source.getAxisX().getMax());
         if (following) setFixedWidthXAxisFormat(); else setVariableWidthXAxisFormat();
         if (controls != null) controls.refresh();
