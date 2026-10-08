@@ -19,6 +19,8 @@ MessagePool::MessagePool(size_t maxSize, size_t maxBuffers)
 
 MessagePool::~MessagePool()
 {
+    while (!fragbufs.empty())
+        _removeFragBuf(fragbufs.size() - 1);
 }
 
 Buffer MessagePool::allocBuffer(size_t sz)
@@ -82,12 +84,15 @@ void MessagePool::freeMessage(Message *b)
 }
 
 
-FragBuf *MessagePool::addFragBuf(u32 data_size)
+FragBuf *MessagePool::addFragBuf(u32 data_size, u16 fragments_in_msg)
 {
-    FragBuf *fbuf = new (mempool.alloc<FragBuf>()) FragBuf{};
-    fbuf->buf = this->allocBuffer(data_size);
+    const size_t allocated_size = data_size + sizeof(FragBuf) +
+                                  fragments_in_msg * sizeof(FragBuf::Fragment);
 
-    while (totalSize > maxSize || fragbufs.size() > maxBuffers) {
+    // Account for the incoming allocation, including fragment metadata.
+    // Preserve support for one message larger than the normal pool budget.
+    while (!fragbufs.empty() &&
+           (totalSize + allocated_size > maxSize || fragbufs.size() >= maxBuffers)) {
         // find and remove the least recently updated fragment buffer
         int idx = -1;
         FragBuf *eldest = nullptr;
@@ -100,22 +105,38 @@ FragBuf *MessagePool::addFragBuf(u32 data_size)
         }
         if (eldest) {
             _removeFragBuf((size_t)idx);
-            // XXX Need to free the removed FragBuf*
         }
     }
 
+    FragBuf *fbuf = new (mempool.alloc<FragBuf>()) FragBuf{};
+    fbuf->buf = this->allocBuffer(data_size);
+    fbuf->fragments.resize(fragments_in_msg);
+    fbuf->allocated_size = allocated_size;
+    fbuf->last_progress = std::chrono::steady_clock::now();
     fragbufs.push_back(fbuf);
-    totalSize += data_size;
+    totalSize += allocated_size;
 
     return fbuf;
 }
 
-FragBuf *MessagePool::lookupFragBuf(struct sockaddr_in *key)
+FragBuf *MessagePool::lookupFragBuf(struct sockaddr_in *key, u32 msg_seqno)
 {
     for (auto& elt : fragbufs)
-        if (elt->matchesSockaddr(key))
+        if (elt->matchesSockaddr(key) && elt->msg_seqno == msg_seqno)
             return elt;
     return nullptr;
+}
+
+void MessagePool::expireFragBufs()
+{
+    // Expire idle assemblies without penalizing slow transfers making progress.
+    const auto now = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < fragbufs.size();) {
+        if (now - fragbufs[i]->last_progress >= std::chrono::seconds(5))
+            _removeFragBuf(i);
+        else
+            ++i;
+    }
 }
 
 void MessagePool::_removeFragBuf(size_t index)
@@ -124,7 +145,7 @@ void MessagePool::_removeFragBuf(size_t index)
 
     // Update the total_size of the fragment buffers
     FragBuf *fbuf = fragbufs[index];
-    totalSize -= fbuf->buf.size;
+    totalSize -= fbuf->allocated_size;
 
     // delete old element, move last element to this slot, and shrink by 1
     size_t lastIdx = fragbufs.size()-1;
@@ -132,6 +153,7 @@ void MessagePool::_removeFragBuf(size_t index)
     fragbufs.pop_back();
 
     this->freeBuffer(fbuf->buf);
+    fbuf->~FragBuf();
     mempool.free(fbuf);
 }
 
