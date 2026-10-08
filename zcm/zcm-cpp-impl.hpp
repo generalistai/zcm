@@ -38,6 +38,18 @@ class Subscription
 static inline void SubscriptionDispatch(const ReceiveBuffer* rbuf, const char* channel, void* usr)
 { ((Subscription*)usr)->dispatch(rbuf, channel); }
 
+// Aborts unconditionally (even in release/NDEBUG builds) on an oversized channel name
+static inline void zcmCheckChannelLength(const std::string& channel,
+                                         int limit = ZCM_CHANNEL_MAXLEN)
+{
+    if (limit == 0 || channel.size() <= (size_t)limit) return;
+    #ifndef ZCM_EMBEDDED
+    fprintf(stderr, "ZCM Error: channel name \"%s\" is too long (%zu bytes, max is %d)\n",
+            channel.c_str(), channel.size(), limit);
+    #endif
+    abort();
+}
+
 #ifndef ZCM_EMBEDDED
 inline ZCM::ZCM()
 {
@@ -203,6 +215,10 @@ inline Subscription* ZCM::subscribe(const std::string& channel,
     sub->usr = usr;
     sub->callback = cb;
     subscribeRaw(sub->rawSub, channel, &SubscriptionDispatch, sub);
+    if (!sub->rawSub) {
+        delete sub;
+        return nullptr;
+    }
 
     subscriptions.push_back(sub);
     return sub;
@@ -395,6 +411,10 @@ inline Subscription* ZCM::subscribe(const std::string& channel,
     sub->handler = handler;
     sub->typedHandlerCallback = cb;
     subscribeRaw(sub->rawSub, channel, &TypedHandlerSubscriptionDispatch<Msg, Handler>, sub);
+    if (!sub->rawSub) {
+        delete sub;
+        return nullptr;
+    }
 
     subscriptions.push_back(sub);
     return sub;
@@ -422,6 +442,10 @@ inline Subscription* ZCM::subscribe(const std::string& channel,
     sub->handler = handler;
     sub->handlerCallback = cb;
     subscribeRaw(sub->rawSub, channel, &HandlerSubscriptionDispatch<Handler>, sub);
+    if (!sub->rawSub) {
+        delete sub;
+        return nullptr;
+    }
 
     subscriptions.push_back(sub);
     return sub;
@@ -450,6 +474,10 @@ inline Subscription* ZCM::subscribe(const std::string& channel,
     sub->usr = usr;
     sub->typedCallback = cb;
     subscribeRaw(sub->rawSub, channel, &TypedSubscriptionDispatch<Msg>, sub);
+    if (!sub->rawSub) {
+        delete sub;
+        return nullptr;
+    }
 
     subscriptions.push_back(sub);
     return sub;
@@ -478,6 +506,10 @@ inline Subscription* ZCM::subscribe(const std::string& channel,
     sub->usr = nullptr;
     sub->cb = cb;
     subscribeRaw(sub->rawSub, channel, &TypedFunctionalSubscriptionDispatch<Msg>, sub);
+    if (!sub->rawSub) {
+        delete sub;
+        return nullptr;
+    }
 
     subscriptions.push_back(sub);
     return sub;
@@ -503,6 +535,10 @@ inline Subscription* ZCM::subscribe(const std::string& channel,
     sub->usr = nullptr;
     sub->cb = cb;
     subscribeRaw(sub->rawSub, channel, &FunctionalSubscriptionDispatch, sub);
+    if (!sub->rawSub) {
+        delete sub;
+        return nullptr;
+    }
 
     subscriptions.push_back(sub);
     return sub;
@@ -529,11 +565,24 @@ inline zcm_t* ZCM::getUnderlyingZCM()
 { return zcm; }
 
 inline int ZCM::publishRaw(const std::string& channel, const uint8_t* data, uint32_t len)
-{ return zcm_publish(zcm, channel.c_str(), data, len); }
+{
+    zcmCheckChannelLength(channel);
+    return zcm_publish(zcm, channel.c_str(), data, len);
+}
 
 inline void ZCM::subscribeRaw(void*& rawSub, const std::string& channel,
                               MsgHandler cb, void* usr)
-{ rawSub = zcm_subscribe(zcm, channel.c_str(), cb, usr); }
+{
+    zcmCheckChannelLength(channel, zcm_subscription_channel_limit(zcm, channel.c_str()));
+    zcm_sub_t* sub = nullptr;
+    _err = zcm_subscribe_ex(zcm, channel.c_str(), cb, usr, &sub);
+    rawSub = sub;
+    #ifndef ZCM_EMBEDDED
+    if (_err != ZCM_EOK)
+        fprintf(stderr, "ZCM Error: subscription to \"%s\" failed: %s (%d)\n",
+                channel.c_str(), strerrno(_err), _err);
+    #endif
+}
 
 inline int ZCM::unsubscribeRaw(void*& rawSub)
 {

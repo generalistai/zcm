@@ -38,7 +38,9 @@ var libzcm = new ffi.Library('libzcm', {
     'zcm_create':               ['pointer', ['string']],
     'zcm_destroy':              ['void',    ['pointer']],
     'zcm_publish':              ['int',     ['pointer', 'string', 'pointer', 'int']],
-    'zcm_try_subscribe':        ['pointer', ['pointer', 'string', 'pointer', 'pointer']],
+    'zcm_subscription_channel_limit': ['int', ['pointer', 'string']],
+    'zcm_try_subscribe_ex':     ['int', ['pointer', 'string', 'pointer', 'pointer', 'pointer']],
+    'zcm_strerrno':             ['string', ['int']],
     'zcm_try_unsubscribe':      ['int',     ['pointer', 'pointer']],
     'zcm_start':                ['void',    ['pointer']],
     'zcm_try_stop':             ['int',     ['pointer']],
@@ -68,6 +70,20 @@ exports.ZCM_EUNKNOWN         = ZCM_EUNKNOWN;
 exports.ZCM_EMEMORY          = ZCM_EMEMORY;
 exports.ZCM_EUNIMPL          = ZCM_EUNIMPL;
 exports.ZCM_NUM_RETURN_CODES = ZCM_NUM_RETURN_CODES;
+
+// Must match ZCM_CHANNEL_MAXLEN in zcm/zcm.h
+var ZCM_CHANNEL_MAXLEN = 72;
+exports.ZCM_CHANNEL_MAXLEN = ZCM_CHANNEL_MAXLEN;
+
+function checkChannelLength(channel, limit = ZCM_CHANNEL_MAXLEN)
+{
+    if (limit === 0) return;
+    var len = Buffer.byteLength(channel, 'utf8');
+    if (len > limit) {
+        throw new Error('ZCM channel name "' + channel + '" is too long (' +
+                        len + ' bytes, max is ' + limit + ')');
+    }
+}
 
 /**
  * Callback that handles data received on the zcm transport which this program has subscribed to
@@ -161,6 +177,7 @@ function zcm(zcmtypes, zcmurl)
      */
     function publish_raw(channel, data)
     {
+        checkChannelLength(channel);
         return libzcm.zcm_publish(parent.z, channel, data, data.length);
     }
 
@@ -196,15 +213,22 @@ function zcm(zcmtypes, zcmurl)
      */
     function subscribe_raw(channel, cb, successCb)
     {
+        checkChannelLength(channel, libzcm.zcm_subscription_channel_limit(parent.z, channel));
         if (!successCb) assert(false, "subcribe requires a success callback to be specified");
         var dispatcher = makeDispatcher(cb);
         var funcPtr = ffi.Callback('void', [recvBufRef, 'string', 'pointer'], dispatcher);
         setTimeout(function sub() {
-            var subs = libzcm.zcm_try_subscribe(parent.z, channel, funcPtr, null);
-            if (ref.isNull(subs)) {
+            var out = ref.alloc('pointer');
+            var ret = libzcm.zcm_try_subscribe_ex(parent.z, channel, funcPtr, null, out);
+            if (ret === ZCM_EAGAIN) {
                 setTimeout(sub, 0);
                 return;
             }
+            if (ret !== ZCM_EOK) {
+                throw new Error('ZCM subscription to "' + channel + '" failed: ' +
+                                libzcm.zcm_strerrno(ret) + ' (' + ret + ')');
+            }
+            var subs = out.deref();
             const id = parent.currSubId;
             parent.subscriptions[parent.currSubId] = {
               "id"                : id,

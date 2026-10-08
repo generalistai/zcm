@@ -57,6 +57,14 @@ JNIEXPORT jobject JNICALL Java_zcm_zcm_ZCMJNI_subscribe
 
 /*
  * Class:     zcm_zcm_ZCMJNI
+ * Method:    subscriptionChannelLimit
+ * Signature: (Ljava/lang/String;)I
+ */
+JNIEXPORT jint JNICALL Java_zcm_zcm_ZCMJNI_subscriptionChannelLimit
+  (JNIEnv *, jobject, jstring);
+
+/*
+ * Class:     zcm_zcm_ZCMJNI
  * Method:    unsubscribe
  * Signature: (Lzcm/zcm/ZCM;Lzcm/zcm/ZCM/Subscription;)I
  */

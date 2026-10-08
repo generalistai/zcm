@@ -7,7 +7,8 @@ export encode,
        fieldnames,
        constfieldnames
 # Zcm functions
-export Zcm,
+export CHANNEL_MAXLEN,
+       Zcm,
        good,
        strerrno,
        subscribe,
@@ -40,6 +41,20 @@ import Base: flush,
 end
 
 abstract type AbstractZcmType end
+
+# Must match ZCM_CHANNEL_MAXLEN in zcm/zcm.h
+const CHANNEL_MAXLEN = 72
+
+function check_channel_length(channel::AbstractString, limit=CHANNEL_MAXLEN)
+    if limit == 0
+        return
+    end
+    len = sizeof(convert(String, channel))
+    if len > limit
+        throw(ArgumentError("ZCM channel name \"$channel\" is too long " *
+                            "($len bytes, max is $limit)"))
+    end
+end
 
 @static if VERSION < v"0.7.0-"
     Nothing = Void
@@ -200,6 +215,9 @@ function subscribe(zcm::Zcm, channel::AbstractString,
                    handler,
                    msgtype=Nothing,
                    additional_args...)
+    limit = ccall(("zcm_subscription_channel_limit", "libzcm"), Cint,
+                  (Ptr{Native.Zcm}, Cstring), zcm, channel)
+    check_channel_length(channel, limit)
     callback = typed_handler(handler, msgtype, additional_args...)
     c_handler = sub_handler(typeof(callback))
     uv_wrapper = ccall(("uv_zcm_msg_handler_create", "libzcmjulia"),
@@ -207,18 +225,22 @@ function subscribe(zcm::Zcm, channel::AbstractString,
                        (Ptr{Nothing}, Ptr{Nothing}),
                        c_handler, Ref(callback))
     uv_handler = cglobal(("uv_zcm_msg_handler_trigger", "libzcmjulia"))
-    try_sub = () -> ccall(("zcm_try_subscribe", "libzcm"), Ptr{Native.Sub},
-                          (Ptr{Native.Zcm}, Cstring, Ptr{Nothing}, Ptr{Native.UvSub}),
-                          zcm, channel, uv_handler, uv_wrapper)
-    csub = Ptr{Native.Sub}(C_NULL)
-    while (true)
-        csub = try_sub()
-        if (csub == C_NULL)
+    csub_out = Ref{Ptr{Native.Sub}}(C_NULL)
+    while true
+        ret = ccall(("zcm_try_subscribe_ex", "libzcm"), Cint,
+                    (Ptr{Native.Zcm}, Cstring, Ptr{Nothing}, Ptr{Native.UvSub}, Ref{Ptr{Native.Sub}}),
+                    zcm, channel, uv_handler, uv_wrapper, csub_out)
+        if ret == 0
+            break
+        elseif ret == -2
             yield()
         else
-            break
+            ccall(("uv_zcm_msg_handler_destroy", "libzcmjulia"), Nothing,
+                  (Ptr{Native.UvSub},), uv_wrapper)
+            error("ZCM subscription to '$channel' failed: $(strerrno(Int(ret))) ($ret)")
         end
     end
+    csub = csub_out[]
     sub = Subscription(callback, c_handler, uv_wrapper, uv_handler, csub)
     push!(zcm.subscriptions, sub)
     return sub
@@ -243,6 +265,7 @@ function unsubscribe(zcm::Zcm, sub::Subscription)
 end
 
 function publish(zcm::Zcm, channel::AbstractString, data::Vector{UInt8})
+    check_channel_length(channel)
     ccall(("zcm_publish", "libzcm"), Cint,
           (Ptr{Native.Zcm}, Cstring, Ptr{Nothing}, UInt32),
           zcm, convert(String, channel), data, length(data))

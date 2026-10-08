@@ -9,6 +9,7 @@ cdef extern from "zcm/python/zcm-python.h":
     void PyEval_InitThreads_CUSTOM()
 
 cdef extern from "zcm/zcm.h":
+    enum: ZCM_CHANNEL_MAXLEN
     cpdef enum zcm_return_codes:
         ZCM_EOK,
         ZCM_EINVALID,
@@ -34,8 +35,10 @@ cdef extern from "zcm/zcm.h":
     void   zcm_destroy(zcm_t* zcm)
 
     const char* zcm_strerrno(int err)
+    int zcm_subscription_channel_limit(const zcm_t* zcm, const char* channel)
 
-    zcm_sub_t* zcm_try_subscribe  (zcm_t* zcm, const char* channel, zcm_msg_handler_t cb, void* usr)
+    int zcm_try_subscribe_ex(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb,
+                            void* usr, zcm_sub_t** sub)
     int        zcm_try_unsubscribe(zcm_t* zcm, zcm_sub_t* sub)
 
     int  zcm_publish(zcm_t* zcm, const char* channel, const uint8_t* data, uint32_t dlen)
@@ -76,6 +79,18 @@ cdef extern from "zcm/zcm.h":
     void                  zcm_eventlog_free_event(zcm_eventlog_event_t* event)
     int                   zcm_eventlog_write_event(zcm_eventlog_t* eventlog, \
                                                    const zcm_eventlog_event_t* event)
+
+CHANNEL_MAXLEN = ZCM_CHANNEL_MAXLEN
+
+cdef bytes _encode_channel(str channel, zcm_t* subscriber=NULL):
+    channel_bytes = channel.encode('utf-8')
+    cdef int limit = ZCM_CHANNEL_MAXLEN
+    if subscriber != NULL:
+        limit = zcm_subscription_channel_limit(subscriber, channel_bytes)
+    if limit and len(channel_bytes) > limit:
+        raise ValueError("ZCM channel name '%s' is too long (%d bytes, max is %d)"
+                         % (channel, len(channel_bytes), limit))
+    return channel_bytes
 
 cdef class ZCMSubscription:
     cdef zcm_sub_t* sub
@@ -120,40 +135,52 @@ cdef class ZCM:
     def strerrno(self, err):
         return zcm_strerrno(err).decode('utf-8')
     def subscribe_raw(self, str channel, handler):
+        cdef int ret
+        cdef bytes channel_bytes = _encode_channel(channel, self.zcm)
         cdef ZCMSubscription subs = ZCMSubscription()
         subs.handler = handler
         subs.msgtype = None
         sig = signature(handler)
         selected_handler_cb = handler_cb_raw_deprecated if len(sig.parameters) == 2 else handler_cb_raw
         while True:
-            subs.sub = zcm_try_subscribe(self.zcm, channel.encode('utf-8'), selected_handler_cb, <void*> subs)
-            if subs.sub != NULL:
+            ret = zcm_try_subscribe_ex(self.zcm, channel_bytes, selected_handler_cb, <void*> subs, &subs.sub)
+            if ret == ZCM_EOK:
                 self.subscriptions.append(subs)
                 return subs
+            if ret != ZCM_EAGAIN:
+                raise RuntimeError("ZCM subscription to '%s' failed: %s (%d)"
+                                   % (channel, self.strerrno(ret), ret))
             time.sleep(0) # yield the gil
     def subscribe(self, str channel, msgtype, handler):
+        cdef int ret
+        cdef bytes channel_bytes = _encode_channel(channel, self.zcm)
         cdef ZCMSubscription subs = ZCMSubscription()
         subs.handler = handler
         subs.msgtype = msgtype
         sig = signature(handler)
         selected_handler_cb = handler_cb_deprecated if len(sig.parameters) == 2 else handler_cb
         while True:
-            subs.sub = zcm_try_subscribe(self.zcm, channel.encode('utf-8'), selected_handler_cb, <void*> subs)
-            if subs.sub != NULL:
+            ret = zcm_try_subscribe_ex(self.zcm, channel_bytes, selected_handler_cb, <void*> subs, &subs.sub)
+            if ret == ZCM_EOK:
                 self.subscriptions.append(subs)
                 return subs
+            if ret != ZCM_EAGAIN:
+                raise RuntimeError("ZCM subscription to '%s' failed: %s (%d)"
+                                   % (channel, self.strerrno(ret), ret))
             time.sleep(0) # yield the gil
     def unsubscribe(self, ZCMSubscription subs):
         while zcm_try_unsubscribe(self.zcm, subs.sub) != ZCM_EOK:
             time.sleep(0) # yield the gil
         self.subscriptions.remove(subs)
     def publish(self, str channel, object msg):
+        cdef bytes channel_bytes = _encode_channel(channel)
         _data = msg.encode()
         cdef const uint8_t* data = _data
-        return zcm_publish(self.zcm, channel.encode('utf-8'), data, len(_data) * sizeof(uint8_t))
+        return zcm_publish(self.zcm, channel_bytes, data, len(_data) * sizeof(uint8_t))
     def publish_raw(self, str channel, bytes data):
+        cdef bytes channel_bytes = _encode_channel(channel)
         cdef const uint8_t* _data = data
-        return zcm_publish(self.zcm, channel.encode('utf-8'), _data, len(data) * sizeof(uint8_t))
+        return zcm_publish(self.zcm, channel_bytes, _data, len(data) * sizeof(uint8_t))
     def flush(self):
         while zcm_try_flush(self.zcm) != ZCM_EOK:
             time.sleep(0) # yield the gil

@@ -53,7 +53,19 @@ echo "Running python tests"
 echo "**********************************"
 $PYTHON $THISDIR/python/bitfield-test.py
 $PYTHON $THISDIR/python/example-test.py
+$PYTHON $THISDIR/python/channel-length-test.py
 echo "Success"
+
+echo
+echo "Running Java channel length tests"
+ZCM_TEST_CLASSPATH=$(pkg-config --variable=classpath zcm)
+javac -cp "$ZCM_TEST_CLASSPATH" -d "$ROOTDIR/build/$BLD/test" \
+    "$THISDIR/java/ChannelLengthTest.java"
+java -cp "$ZCM_TEST_CLASSPATH:$ROOTDIR/build/$BLD/test" ChannelLengthTest
+
+echo
+echo "Running Julia channel length tests"
+julia "$THISDIR/julia/channel-length-test.jl"
 
 echo
 echo
@@ -65,4 +77,5 @@ nvm use
 rm -rf node_modules
 npm i --unsafe-perm
 node index.js
+node channel-length-test.js
 echo "Success"

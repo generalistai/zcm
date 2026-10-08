@@ -20,6 +20,9 @@ int zcm_nonblocking_publish(zcm_nonblocking_t* zcm, const char* channel,
 zcm_sub_t* zcm_nonblocking_subscribe(zcm_nonblocking_t* zcm, const char* channel,
                                      zcm_msg_handler_t cb, void* usr);
 
+int zcm_nonblocking_subscribe_ex(zcm_nonblocking_t* zcm, const char* channel,
+                                 zcm_msg_handler_t cb, void* usr, zcm_sub_t** sub);
+
 int zcm_nonblocking_unsubscribe(zcm_nonblocking_t* zcm, zcm_sub_t* sub);
 
 int zcm_nonblocking_query_drops(zcm_nonblocking_t *zcm, uint64_t *out_drops);

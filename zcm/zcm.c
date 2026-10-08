@@ -11,10 +11,10 @@
 #include "zcm/zcm.h"
 #include "zcm/zcm_private.h"
 #include "zcm/nonblocking.h"
+#include <string.h>
 
 #ifndef ZCM_EMBEDDED
 #include <stdlib.h>
-#include <string.h>
 
 # include "zcm/blocking.h"
 # include "zcm/transport_registrar.h"
@@ -176,9 +176,9 @@ static const char* errcode_str[] = {
 
 const char* zcm_strerrno(int err)
 {
-    if (((unsigned) err) >= ZCM_NUM_RETURN_CODES) err = ZCM_NUM_RETURN_CODES;
-
-    return errcode_str[(unsigned) err];
+    unsigned index = 0u - (unsigned)err;
+    if (index >= ZCM_NUM_RETURN_CODES) index = ZCM_NUM_RETURN_CODES;
+    return errcode_str[index];
 }
 
 int zcm_publish(zcm_t* zcm, const char* channel, const uint8_t* data, uint32_t len)
@@ -213,23 +213,50 @@ void zcm_flush(zcm_t* zcm)
 #endif
 }
 
+int zcm_subscription_channel_limit(const zcm_t* zcm, const char* channel)
+{
+#ifndef ZCM_EMBEDDED
+    /* Match the metacharacters recognized by the blocking transports. */
+    if (zcm->type == ZCM_BLOCKING && strpbrk(channel, "()|.*+")) return 0;
+#endif
+    return ZCM_CHANNEL_MAXLEN;
+}
+
+static int subscribe_ex(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb,
+                         void* usr, zcm_sub_t** sub, bool block)
+{
+    int limit;
+    if (!sub) return ZCM_EINVALID;
+    *sub = NULL;
+    if (!zcm || !channel) return ZCM_EINVALID;
+    limit = zcm_subscription_channel_limit(zcm, channel);
+    if (limit && strlen(channel) > (size_t)limit) return ZCM_EINVALID;
+#ifndef ZCM_EMBEDDED
+    if (zcm->type == ZCM_BLOCKING)
+        return zcm_blocking_subscribe_ex(zcm->impl, channel, cb, usr, sub, block);
+#endif
+    if (zcm->type == ZCM_NONBLOCKING)
+        return zcm_nonblocking_subscribe_ex(zcm->impl, channel, cb, usr, sub);
+    return ZCM_EINVALID;
+}
+
+int zcm_subscribe_ex(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb,
+                     void* usr, zcm_sub_t** sub)
+{
+    return subscribe_ex(zcm, channel, cb, usr, sub, true);
+}
+
+int zcm_try_subscribe_ex(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb,
+                         void* usr, zcm_sub_t** sub)
+{
+    return subscribe_ex(zcm, channel, cb, usr, sub, false);
+}
+
 zcm_sub_t* zcm_subscribe(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb, void* usr)
 {
-    zcm_sub_t* ret = NULL;
-#ifndef ZCM_EMBEDDED
-    switch (zcm->type) {
-        case ZCM_BLOCKING:
-            ret = zcm_blocking_subscribe(zcm->impl, channel, cb, usr);
-            break;
-        case ZCM_NONBLOCKING:
-            ret = zcm_nonblocking_subscribe(zcm->impl, channel, cb, usr);
-            break;
-    }
-#else
-    ZCM_ASSERT(zcm->type == ZCM_NONBLOCKING);
-    ret = zcm_nonblocking_subscribe(zcm->impl, channel, cb, usr);
-#endif
-    return ret;
+    zcm_sub_t* sub = NULL;
+    zcm_subscribe_ex(zcm, channel, cb, usr, &sub);
+    return sub;
 }
 
 int zcm_unsubscribe(zcm_t* zcm, zcm_sub_t* sub)
@@ -363,21 +390,9 @@ int zcm_query_drops(zcm_t *zcm, uint64_t *out_drops)
 /****************************************************************************/
 zcm_sub_t* zcm_try_subscribe(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb, void* usr)
 {
-    zcm_sub_t* ret = NULL;
-#ifndef ZCM_EMBEDDED
-    switch (zcm->type) {
-        case ZCM_BLOCKING:
-            ret = zcm_blocking_try_subscribe(zcm->impl, channel, cb, usr);
-            break;
-        case ZCM_NONBLOCKING:
-            ret = zcm_nonblocking_subscribe(zcm->impl, channel, cb, usr);
-            break;
-    }
-#else
-    ZCM_ASSERT(zcm->type == ZCM_NONBLOCKING);
-    ret = zcm_nonblocking_subscribe(zcm->impl, channel, cb, usr);
-#endif
-    return ret;
+    zcm_sub_t* sub = NULL;
+    zcm_try_subscribe_ex(zcm, channel, cb, usr, &sub);
+    return sub;
 }
 
 int zcm_try_unsubscribe(zcm_t* zcm, zcm_sub_t* sub)

@@ -27,6 +27,7 @@ class ZCMJNI
 
     public native int publish(String channel, byte[] data, int offset, int length);
 
+    public native int subscriptionChannelLimit(String channel);
     public native Object subscribe(String channel, ZCM zcm, Object usr);
     public native int unsubscribe(Object usr);
 }
