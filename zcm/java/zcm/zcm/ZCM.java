@@ -19,7 +19,13 @@ public class ZCM
 
     private static void checkChannelLength(String channel)
     {
-        int len = channel.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        // GetStringUTFChars uses modified UTF-8: NUL is two bytes and each
+        // UTF-16 surrogate is three bytes, even when it belongs to a pair.
+        long len = 0;
+        for (int i = 0; i < channel.length(); ++i) {
+            char c = channel.charAt(i);
+            len += c >= 1 && c <= 0x7f ? 1 : c <= 0x7ff ? 2 : 3;
+        }
         if (len > CHANNEL_MAXLEN)
             throw new IllegalArgumentException(
                 "ZCM channel name \"" + channel + "\" is too long (" +
