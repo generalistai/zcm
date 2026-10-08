@@ -78,27 +78,19 @@ struct Msg
     Msg& operator=(Msg&& other) = delete;
 };
 
-static bool isRegexChannel(const string& channel)
-{
-    // These chars are considered regex
-    auto isRegexChar = [](char c) {
-        return c == '(' || c == ')' || c == '|' ||
-        c == '.' || c == '*' || c == '+';
-    };
-
-    for (auto& c : channel)
-        if (isRegexChar(c))
-            return true;
-
-    return false;
-}
-
 struct zcm_blocking
 {
   private:
+    struct Subscription : zcm_sub_t
+    {
+        // Nonblocking subscriptions use the fixed buffer in zcm_sub_t.
+        // Blocking regexes need their full pattern for lookup and transport cleanup.
+        string pattern;
+    };
+
     // XXX If we change this to a linked list implementation, we can probably
     //     support subscribing/unsubscribing from within subscription callback handlers
-    using SubList = vector<zcm_sub_t*>;
+    using SubList = vector<Subscription*>;
 
   public:
     zcm_blocking(zcm_t* z, zcm_trans_t* zt_);
@@ -138,8 +130,8 @@ struct zcm_blocking
     mutex dispOneMutex;
     mutex sendOneMutex;
 
-    bool deleteSubEntry(zcm_sub_t* sub, size_t nentriesleft);
-    bool deleteFromSubList(SubList& slist, zcm_sub_t* sub);
+    bool deleteSubEntry(Subscription* sub, size_t nentriesleft);
+    bool deleteFromSubList(SubList& slist, Subscription* sub);
 
     zcm_t* z;
     zcm_trans_t* zt;
@@ -481,13 +473,14 @@ zcm_sub_t* zcm_blocking_t::subscribe(const string& channel,
         return nullptr;
     }
 
-    zcm_sub_t* sub = new zcm_sub_t();
+    Subscription* sub = new Subscription();
     ZCM_ASSERT(sub);
+    sub->pattern = channel;
     strncpy(sub->channel, channel.c_str(), ZCM_CHANNEL_MAXLEN);
     sub->channel[ZCM_CHANNEL_MAXLEN] = '\0';
     sub->callback = cb;
     sub->usr = usr;
-    sub->regex = isRegexChannel(channel);
+    sub->regex = zcm_subscription_channel_limit(z, channel.c_str()) == 0;
     if (sub->regex) {
         sub->regexobj = (void*) new std::regex(channel);
         ZCM_ASSERT(sub->regexobj);
@@ -503,7 +496,7 @@ zcm_sub_t* zcm_blocking_t::subscribe(const string& channel,
 // Note: We use a lock on unsubscribe() to make sure it can be
 // called concurrently. Without the lock, there is a race
 // on modifying and reading the 'subs' and 'subsRegex' containers
-int zcm_blocking_t::unsubscribe(zcm_sub_t* sub, bool block)
+int zcm_blocking_t::unsubscribe(zcm_sub_t* subscription, bool block)
 {
     unique_lock<mutex> lk1(subDispMutex, std::defer_lock);
     unique_lock<mutex> lk2(subRecvMutex, std::defer_lock);
@@ -515,9 +508,10 @@ int zcm_blocking_t::unsubscribe(zcm_sub_t* sub, bool block)
         return ZCM_EAGAIN;
     }
 
+    auto* sub = static_cast<Subscription*>(subscription);
     auto& subsSelected = sub->regex ? subsRegex : subs;
 
-    auto it = subsSelected.find(sub->channel);
+    auto it = subsSelected.find(sub->pattern);
     if (it == subsSelected.end()) {
         ZCM_DEBUG("failed to find the subscription channel in unsubscribe()");
         return ZCM_EINVALID;
@@ -813,20 +807,20 @@ bool zcm_blocking_t::sendOneMessage(bool returnIfPaused)
     return true;
 }
 
-bool zcm_blocking_t::deleteSubEntry(zcm_sub_t* sub, size_t nentriesleft)
+bool zcm_blocking_t::deleteSubEntry(Subscription* sub, size_t nentriesleft)
 {
     int rc = ZCM_EOK;
     if (sub->regex) {
         delete (std::regex*) sub->regexobj;
     }
     if (nentriesleft == 0) {
-        rc = zcm_trans_recvmsg_enable(zt, sub->channel, false);
+        rc = zcm_trans_recvmsg_enable(zt, sub->pattern.c_str(), false);
     }
     delete sub;
     return rc == ZCM_EOK;
 }
 
-bool zcm_blocking_t::deleteFromSubList(SubList& slist, zcm_sub_t* sub)
+bool zcm_blocking_t::deleteFromSubList(SubList& slist, Subscription* sub)
 {
     for (size_t i = 0; i < slist.size(); i++) {
         if (slist[i] == sub) {

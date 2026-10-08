@@ -64,6 +64,10 @@ javac -cp "$ZCM_TEST_CLASSPATH" -d "$ROOTDIR/build/$BLD/test" \
 java -cp "$ZCM_TEST_CLASSPATH:$ROOTDIR/build/$BLD/test" ChannelLengthTest
 
 echo
+echo "Running Julia channel length tests"
+julia "$THISDIR/julia/channel-length-test.jl"
+
+echo
 echo
 echo "**********************************"
 echo "Running node tests"
@@ -73,4 +77,5 @@ nvm use
 rm -rf node_modules
 npm i --unsafe-perm
 node index.js
+node channel-length-test.js
 echo "Success"

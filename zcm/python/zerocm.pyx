@@ -35,6 +35,7 @@ cdef extern from "zcm/zcm.h":
     void   zcm_destroy(zcm_t* zcm)
 
     const char* zcm_strerrno(int err)
+    int zcm_subscription_channel_limit(const zcm_t* zcm, const char* channel)
 
     zcm_sub_t* zcm_try_subscribe  (zcm_t* zcm, const char* channel, zcm_msg_handler_t cb, void* usr)
     int        zcm_try_unsubscribe(zcm_t* zcm, zcm_sub_t* sub)
@@ -80,11 +81,14 @@ cdef extern from "zcm/zcm.h":
 
 CHANNEL_MAXLEN = ZCM_CHANNEL_MAXLEN
 
-cdef bytes _encode_channel(str channel):
+cdef bytes _encode_channel(str channel, zcm_t* subscriber=NULL):
     channel_bytes = channel.encode('utf-8')
-    if len(channel_bytes) > ZCM_CHANNEL_MAXLEN:
+    cdef int limit = ZCM_CHANNEL_MAXLEN
+    if subscriber != NULL:
+        limit = zcm_subscription_channel_limit(subscriber, channel_bytes)
+    if limit and len(channel_bytes) > limit:
         raise ValueError("ZCM channel name '%s' is too long (%d bytes, max is %d)"
-                         % (channel, len(channel_bytes), ZCM_CHANNEL_MAXLEN))
+                         % (channel, len(channel_bytes), limit))
     return channel_bytes
 
 cdef class ZCMSubscription:
@@ -130,7 +134,7 @@ cdef class ZCM:
     def strerrno(self, err):
         return zcm_strerrno(err).decode('utf-8')
     def subscribe_raw(self, str channel, handler):
-        cdef bytes channel_bytes = _encode_channel(channel)
+        cdef bytes channel_bytes = _encode_channel(channel, self.zcm)
         cdef ZCMSubscription subs = ZCMSubscription()
         subs.handler = handler
         subs.msgtype = None
@@ -143,7 +147,7 @@ cdef class ZCM:
                 return subs
             time.sleep(0) # yield the gil
     def subscribe(self, str channel, msgtype, handler):
-        cdef bytes channel_bytes = _encode_channel(channel)
+        cdef bytes channel_bytes = _encode_channel(channel, self.zcm)
         cdef ZCMSubscription subs = ZCMSubscription()
         subs.handler = handler
         subs.msgtype = msgtype

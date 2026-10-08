@@ -40,7 +40,6 @@ class ChannelLengthTest(unittest.TestCase):
         for channel in (
             "a" * (CHANNEL_MAXLEN + 1),
             "é" * (CHANNEL_MAXLEN // 2 + 1),
-            "a" * CHANNEL_MAXLEN + ".*",
         ):
             operations = (
                 lambda: zcm.publish_raw(channel, b"payload"),
@@ -51,6 +50,40 @@ class ChannelLengthTest(unittest.TestCase):
             for operation in operations:
                 with self.assertRaisesRegex(ValueError, "too long.*bytes, max is"):
                     operation()
+
+    def test_long_blocking_regex(self):
+        pattern = "^(?!(camera_.*|gen_camera_obs_.*|camera_left|camera_right|projection_left|projection_right)$).*$"
+        self.assertGreater(len(pattern), CHANNEL_MAXLEN)
+        for typed in (False, True):
+            zcm = ZCM("block-inproc")
+            received = []
+
+            def handler(name, data, recv_utime):
+                received.append((name, data))
+
+            if typed:
+                sub = zcm.subscribe(pattern, Message, handler)
+                self.assertEqual(zcm.publish("event", Message()), ZCM_EOK)
+            else:
+                sub = zcm.subscribe_raw(pattern, handler)
+                self.assertEqual(zcm.publish_raw("event", b"payload"), ZCM_EOK)
+            self.assertEqual(zcm.handle(), ZCM_EOK)
+            self.assertEqual(received, [("event", b"payload")])
+            zcm.unsubscribe(sub)
+
+            # Keep dispatch running so a stale regex callback would be observable.
+            sentinel = zcm.subscribe_raw(".*", lambda name, data, recv_utime: None)
+            self.assertEqual(zcm.publish_raw("event", b"after unsubscribe"), ZCM_EOK)
+            self.assertEqual(zcm.handle(), ZCM_EOK)
+            self.assertEqual(received, [("event", b"payload")])
+            zcm.unsubscribe(sentinel)
+            with self.assertRaises(ValueError):
+                zcm.publish_raw(pattern, b"payload")
+
+    def test_nonblocking_regex_still_has_a_length_limit(self):
+        zcm = ZCM("nonblock-inproc")
+        with self.assertRaises(ValueError):
+            zcm.subscribe_raw("a" * CHANNEL_MAXLEN + ".*", lambda name, data, recv_utime: None)
 
 
 if __name__ == "__main__":

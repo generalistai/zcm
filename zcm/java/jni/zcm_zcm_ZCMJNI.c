@@ -156,8 +156,25 @@ static void handler(const zcm_recv_buf_t *rbuf, const char *channel, void *_usr)
 
 /*
  * Class:     zcm_zcm_ZCMJNI
+ * Method:    subscriptionChannelLimit
+ * Signature: (Ljava/lang/String;)I
+ */
+JNIEXPORT jint JNICALL Java_zcm_zcm_ZCMJNI_subscriptionChannelLimit
+(JNIEnv *env, jobject self, jstring channelJ)
+{
+    Internal *I = getNativePtr(env, self);
+    assert(I);
+    const char *channel = (*env)->GetStringUTFChars(env, channelJ, 0);
+    if (!channel) return ZCM_CHANNEL_MAXLEN; // A JNI exception is pending.
+    int limit = zcm_subscription_channel_limit(I->zcm, channel);
+    (*env)->ReleaseStringUTFChars(env, channelJ, channel);
+    return limit;
+}
+
+/*
+ * Class:     zcm_zcm_ZCMJNI
  * Method:    subscribe
- * Signature: (Ljava/lang/String;Lzcm/zcm/ZCM;)I
+ * Signature: (Ljava/lang/String;Lzcm/zcm/ZCM;Ljava/lang/Object;)Ljava/lang/Object;
  */
 JNIEXPORT jobject JNICALL Java_zcm_zcm_ZCMJNI_subscribe
 (JNIEnv *env, jobject self, jstring channelJ, jobject zcmObjJ, jobject usr)

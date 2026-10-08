@@ -19,6 +19,55 @@ class ChannelLengthTest : public CxxTest::TestSuite
     }
 
   public:
+    void testLongRegexSubscriptions()
+    {
+        zcm::ZCM zcm("block-inproc");
+        const std::string prefix = "(" + std::string(ZCM_CHANNEL_MAXLEN, 'a');
+        const std::string pattern = prefix + "|event)";
+        std::string first, duplicate, other;
+        auto* sub = zcm.subscribe(pattern, receive, &first);
+        auto* dup = zcm.subscribe(pattern, receive, &duplicate);
+        auto* otherSub = zcm.subscribe(prefix + "|other)", receive, &other);
+        TS_ASSERT(sub);
+        TS_ASSERT(dup);
+        TS_ASSERT(otherSub);
+        const uint8_t data = 42;
+        TS_ASSERT_EQUALS(zcm.publish("event", &data, 1), ZCM_EOK);
+        TS_ASSERT_EQUALS(zcm.handle(), ZCM_EOK);
+        TS_ASSERT_EQUALS(first, "event");
+        TS_ASSERT_EQUALS(duplicate, "event");
+        TS_ASSERT(other.empty());
+
+        TS_ASSERT_EQUALS(zcm.unsubscribe(sub), ZCM_EOK);
+        first.clear();
+        duplicate.clear();
+        TS_ASSERT_EQUALS(zcm.publish("event", &data, 1), ZCM_EOK);
+        TS_ASSERT_EQUALS(zcm.handle(), ZCM_EOK);
+        TS_ASSERT(first.empty());
+        TS_ASSERT_EQUALS(duplicate, "event");
+        TS_ASSERT_EQUALS(zcm.unsubscribe(dup), ZCM_EOK);
+        TS_ASSERT_EQUALS(zcm.publish("other", &data, 1), ZCM_EOK);
+        TS_ASSERT_EQUALS(zcm.handle(), ZCM_EOK);
+        TS_ASSERT_EQUALS(other, "other");
+        TS_ASSERT_EQUALS(zcm.unsubscribe(otherSub), ZCM_EOK);
+    }
+
+    void testNativeSubscriptionLimits()
+    {
+        for (const char* url : {"block-inproc", "nonblock-inproc"}) {
+            zcm::ZCM zcm(url);
+            auto* native = zcm.getUnderlyingZCM();
+            std::string channel(ZCM_CHANNEL_MAXLEN + 1, 'a');
+            TS_ASSERT_EQUALS(zcm_subscribe(native, channel.c_str(), nullptr, nullptr), nullptr);
+            TS_ASSERT_EQUALS(zcm_try_subscribe(native, channel.c_str(), nullptr, nullptr), nullptr);
+            if (native->type == ZCM_NONBLOCKING) {
+                channel += ".*";
+                TS_ASSERT_EQUALS(zcm_subscribe(native, channel.c_str(), nullptr, nullptr), nullptr);
+                TS_ASSERT_EQUALS(zcm_try_subscribe(native, channel.c_str(), nullptr, nullptr), nullptr);
+            }
+        }
+    }
+
     void testMaximumLengthRoundTrip()
     {
         zcm::ZCM zcm("nonblock-inproc");

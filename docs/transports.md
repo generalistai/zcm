@@ -66,6 +66,12 @@ be used to *summon* the transport:
 When no url is provided (i.e. `zcm_create(NULL)`), the `ZCM_DEFAULT_URL` environment variable is
 queried for a valid url.
 
+Published channel names are limited to `ZCM_CHANNEL_MAXLEN` bytes (72), excluding
+the terminating NUL. Blocking subscriptions can use longer regular expressions:
+the limit applies to the channel names they match, not to the pattern text.
+Nonblocking subscriptions retain the same 72-byte limit because they store their
+patterns in a fixed-size buffer.
+
 ## Custom Transports
 
 While these built-in transports are enough for many applications, there are many situations

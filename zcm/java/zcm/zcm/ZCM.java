@@ -17,8 +17,9 @@ public class ZCM
         ZCMSubscriber javaSub;
     }
 
-    private static void checkChannelLength(String channel)
+    private static void checkChannelLength(String channel, int limit)
     {
+        if (limit == 0) return;
         // GetStringUTFChars uses modified UTF-8: NUL is two bytes and each
         // UTF-16 surrogate is three bytes, even when it belongs to a pair.
         long len = 0;
@@ -26,10 +27,10 @@ public class ZCM
             char c = channel.charAt(i);
             len += c >= 1 && c <= 0x7f ? 1 : c <= 0x7ff ? 2 : 3;
         }
-        if (len > CHANNEL_MAXLEN)
+        if (len > limit)
             throw new IllegalArgumentException(
                 "ZCM channel name \"" + channel + "\" is too long (" +
-                len + " bytes, max is " + CHANNEL_MAXLEN + ")");
+                len + " bytes, max is " + limit + ")");
     }
 
     boolean closed = false;
@@ -111,14 +112,14 @@ public class ZCM
         throws IOException
     {
         if (this.closed) throw new IllegalStateException();
-        checkChannelLength(channel);
+        checkChannelLength(channel, CHANNEL_MAXLEN);
         zcmjni.publish(channel, data, offset, length);
     }
 
     public Subscription subscribe(String channel, ZCMSubscriber sub)
     {
         if (this.closed) throw new IllegalStateException();
-        checkChannelLength(channel);
+        checkChannelLength(channel, zcmjni.subscriptionChannelLimit(channel));
 
         Subscription subs = new Subscription();
         subs.javaSub = sub;

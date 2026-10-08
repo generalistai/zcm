@@ -18,10 +18,15 @@ public class ChannelLengthTest
 
     private static void checkAccepted(String channel) throws Exception
     {
+        checkAccepted(channel, channel);
+    }
+
+    private static void checkAccepted(String pattern, String channel) throws Exception
+    {
         ZCM zcm = new ZCM("block-inproc");
         CountDownLatch received = new CountDownLatch(1);
         try {
-            ZCM.Subscription sub = zcm.subscribe(channel, (z, actual, data) -> {
+            ZCM.Subscription sub = zcm.subscribe(pattern, (z, actual, data) -> {
                 if (channel.equals(actual)) received.countDown();
             });
             zcm.start();
@@ -38,7 +43,12 @@ public class ChannelLengthTest
 
     private static void checkRejected(String channel) throws Exception
     {
-        ZCM zcm = new ZCM("block-inproc");
+        checkRejected(channel, "block-inproc");
+    }
+
+    private static void checkRejected(String channel, String url) throws Exception
+    {
+        ZCM zcm = new ZCM(url);
         try {
             try {
                 zcm.publish(channel, DATA, 0, DATA.length);
@@ -57,7 +67,8 @@ public class ChannelLengthTest
     {
         checkAccepted(repeat("a", ZCM.CHANNEL_MAXLEN));
         checkRejected(repeat("a", ZCM.CHANNEL_MAXLEN + 1));
-        checkRejected(repeat("a", ZCM.CHANNEL_MAXLEN) + ".*");
+        checkAccepted("(" + repeat("a", ZCM.CHANNEL_MAXLEN) + "|event)", "event");
+        checkRejected(repeat("a", ZCM.CHANNEL_MAXLEN) + ".*", "nonblock-inproc");
         checkAccepted(repeat("\u00e9", ZCM.CHANNEL_MAXLEN / 2));
         checkRejected(repeat("\u00e9", ZCM.CHANNEL_MAXLEN / 2 + 1));
         // JNI encodes each surrogate separately, and NUL takes two bytes.

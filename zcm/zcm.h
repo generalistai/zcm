@@ -112,7 +112,14 @@ void zcm_cleanup(zcm_t* zcm);
 /* Returns the error string from the error number */
 const char* zcm_strerrno(int err);
 
-/* Subscribe to zcm messages
+/* Maximum subscription length in bytes, excluding the terminating NUL.
+   Returns 0 for blocking regular expressions, which have no length limit.
+   This does not validate regular-expression syntax. */
+int zcm_subscription_channel_limit(const zcm_t* zcm, const char* channel);
+
+/* Subscribe to zcm messages. Blocking transports accept regular expressions
+   longer than ZCM_CHANNEL_MAXLEN; literal channels and nonblocking subscriptions
+   are limited to ZCM_CHANNEL_MAXLEN bytes.
    Returns a subscription object on success, and NULL on failure */
 zcm_sub_t* zcm_subscribe(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb, void* usr);
 

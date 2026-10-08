@@ -11,10 +11,10 @@
 #include "zcm/zcm.h"
 #include "zcm/zcm_private.h"
 #include "zcm/nonblocking.h"
+#include <string.h>
 
 #ifndef ZCM_EMBEDDED
 #include <stdlib.h>
-#include <string.h>
 
 # include "zcm/blocking.h"
 # include "zcm/transport_registrar.h"
@@ -213,9 +213,20 @@ void zcm_flush(zcm_t* zcm)
 #endif
 }
 
+int zcm_subscription_channel_limit(const zcm_t* zcm, const char* channel)
+{
+#ifndef ZCM_EMBEDDED
+    /* Match the metacharacters recognized by the blocking transports. */
+    if (zcm->type == ZCM_BLOCKING && strpbrk(channel, "()|.*+")) return 0;
+#endif
+    return ZCM_CHANNEL_MAXLEN;
+}
+
 zcm_sub_t* zcm_subscribe(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb, void* usr)
 {
     zcm_sub_t* ret = NULL;
+    int limit = zcm_subscription_channel_limit(zcm, channel);
+    if (limit && strlen(channel) > (size_t)limit) return NULL;
 #ifndef ZCM_EMBEDDED
     switch (zcm->type) {
         case ZCM_BLOCKING:
@@ -364,6 +375,8 @@ int zcm_query_drops(zcm_t *zcm, uint64_t *out_drops)
 zcm_sub_t* zcm_try_subscribe(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb, void* usr)
 {
     zcm_sub_t* ret = NULL;
+    int limit = zcm_subscription_channel_limit(zcm, channel);
+    if (limit && strlen(channel) > (size_t)limit) return NULL;
 #ifndef ZCM_EMBEDDED
     switch (zcm->type) {
         case ZCM_BLOCKING:

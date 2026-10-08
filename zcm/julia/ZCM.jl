@@ -45,11 +45,14 @@ abstract type AbstractZcmType end
 # Must match ZCM_CHANNEL_MAXLEN in zcm/zcm.h
 const CHANNEL_MAXLEN = 72
 
-function check_channel_length(channel::AbstractString)
+function check_channel_length(channel::AbstractString, limit=CHANNEL_MAXLEN)
+    if limit == 0
+        return
+    end
     len = sizeof(convert(String, channel))
-    if len > CHANNEL_MAXLEN
+    if len > limit
         throw(ArgumentError("ZCM channel name \"$channel\" is too long " *
-                            "($len bytes, max is $CHANNEL_MAXLEN)"))
+                            "($len bytes, max is $limit)"))
     end
 end
 
@@ -212,7 +215,9 @@ function subscribe(zcm::Zcm, channel::AbstractString,
                    handler,
                    msgtype=Nothing,
                    additional_args...)
-    check_channel_length(channel)
+    limit = ccall(("zcm_subscription_channel_limit", "libzcm"), Cint,
+                  (Ptr{Native.Zcm}, Cstring), zcm, channel)
+    check_channel_length(channel, limit)
     callback = typed_handler(handler, msgtype, additional_args...)
     c_handler = sub_handler(typeof(callback))
     uv_wrapper = ccall(("uv_zcm_msg_handler_create", "libzcmjulia"),
