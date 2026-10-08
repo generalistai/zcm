@@ -225,18 +225,22 @@ function subscribe(zcm::Zcm, channel::AbstractString,
                        (Ptr{Nothing}, Ptr{Nothing}),
                        c_handler, Ref(callback))
     uv_handler = cglobal(("uv_zcm_msg_handler_trigger", "libzcmjulia"))
-    try_sub = () -> ccall(("zcm_try_subscribe", "libzcm"), Ptr{Native.Sub},
-                          (Ptr{Native.Zcm}, Cstring, Ptr{Nothing}, Ptr{Native.UvSub}),
-                          zcm, channel, uv_handler, uv_wrapper)
-    csub = Ptr{Native.Sub}(C_NULL)
-    while (true)
-        csub = try_sub()
-        if (csub == C_NULL)
+    csub_out = Ref{Ptr{Native.Sub}}(C_NULL)
+    while true
+        ret = ccall(("zcm_try_subscribe_ex", "libzcm"), Cint,
+                    (Ptr{Native.Zcm}, Cstring, Ptr{Nothing}, Ptr{Native.UvSub}, Ref{Ptr{Native.Sub}}),
+                    zcm, channel, uv_handler, uv_wrapper, csub_out)
+        if ret == 0
+            break
+        elseif ret == -2
             yield()
         else
-            break
+            ccall(("uv_zcm_msg_handler_destroy", "libzcmjulia"), Nothing,
+                  (Ptr{Native.UvSub},), uv_wrapper)
+            error("ZCM subscription to '$channel' failed: $(strerrno(Int(ret))) ($ret)")
         end
     end
+    csub = csub_out[]
     sub = Subscription(callback, c_handler, uv_wrapper, uv_handler, csub)
     push!(zcm.subscriptions, sub)
     return sub

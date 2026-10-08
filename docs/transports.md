@@ -72,6 +72,15 @@ the limit applies to the channel names they match, not to the pattern text.
 Nonblocking subscriptions retain the same 72-byte limit because they store their
 patterns in a fixed-size buffer.
 
+IPC also limits the full Unix socket path, including `/tmp/`, the subnet, and the
+channel prefix. Longer subnets therefore reduce the usable channel length.
+An oversized literal endpoint fails subscription immediately; bindings retry
+only temporary failures (`ZCM_EAGAIN`). C callers can use `zcm_subscribe_ex` or
+`zcm_try_subscribe_ex` to distinguish permanent errors from `ZCM_EAGAIN`.
+C++ returns a null subscription and records the error in `err()`; Python, Java,
+Julia, and Node report an exception. IPC publication is asynchronous: an invalid
+endpoint is reported to stderr when the queued message reaches the transport.
+
 ## Custom Transports
 
 While these built-in transports are enough for many applications, there are many situations

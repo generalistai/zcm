@@ -1,7 +1,8 @@
 const assert = require('assert');
 const zcm = require('zerocm');
 const types = require('zcmtypes');
-const z = zcm.create(types, 'block-inproc');
+const fs = require('fs');
+let z = zcm.create(types, 'block-inproc');
 const msg = new types.example_t();
 msg.utime = 42;
 
@@ -15,6 +16,7 @@ async function roundTrip(pattern, channel) {
   await new Promise((resolve, reject) => {
     z.subscribe(pattern, types.example_t, (actual, received) => {
       try {
+        assert(sub, 'Message arrived before the subscription success callback');
         assert.strictEqual(actual, channel);
         assert.strictEqual(received.utime.toString(), '42');
         resolve();
@@ -25,6 +27,8 @@ async function roundTrip(pattern, channel) {
       sub = subscription;
       assert.strictEqual(z.publish(channel, msg), zcm.ZCM_EOK);
     });
+    // Exercise arrival while the asynchronous subscription is being established.
+    assert.strictEqual(z.publish(channel, msg), zcm.ZCM_EOK);
   });
   await new Promise(resolve => z.unsubscribe(sub, resolve));
 }
@@ -42,6 +46,18 @@ async function roundTrip(pattern, channel) {
   }
   await new Promise(resolve => z.stop(resolve));
   z.destroy();
+  const directory = fs.mkdtempSync('/tmp/zcm-ipc-');
+  z = zcm.create(types, 'ipc://' + directory.slice(5));
+  const error = await new Promise(resolve => {
+    process.once('uncaughtException', resolve);
+    z.subscribe('a'.repeat(72), null, () => {}, () => assert.fail('Invalid IPC endpoint accepted'));
+  });
+  assert(/subscription.*Invalid arguments/.test(error.message));
+  const sub = await new Promise(resolve => z.subscribe('event', null, () => {}, resolve));
+  await new Promise(resolve => z.unsubscribe(sub, resolve));
+  await new Promise(resolve => z.stop(resolve));
+  z.destroy();
+  fs.rmdirSync(directory);
   clearTimeout(watchdog);
   console.log('Node channel length and regex tests passed');
 })().catch(err => {

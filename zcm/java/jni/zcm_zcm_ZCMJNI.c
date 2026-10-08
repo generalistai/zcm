@@ -189,10 +189,18 @@ JNIEXPORT jobject JNICALL Java_zcm_zcm_ZCMJNI_subscribe
 
     const char *channel = (*env)->GetStringUTFChars(env, channelJ, 0);
 
-    // TODO: need to handle the subscription type returned from subscribe
-    subs->zcmsub = zcm_subscribe(I->zcm, channel, handler, (void*)subs);
-
+    int rc = zcm_subscribe_ex(I->zcm, channel, handler, (void*)subs, &subs->zcmsub);
     (*env)->ReleaseStringUTFChars(env, channelJ, channel);
+    if (rc != ZCM_EOK) {
+        char message[128];
+        snprintf(message, sizeof(message), "ZCM subscription failed: %s (%d)", zcm_strerrno(rc), rc);
+        (*env)->DeleteGlobalRef(env, subs->javaUsr);
+        (*env)->DeleteGlobalRef(env, subs->self);
+        free(subs);
+        jclass exception = (*env)->FindClass(env, "java/lang/IllegalStateException");
+        if (exception) (*env)->ThrowNew(env, exception, message);
+        return NULL;
+    }
 
     return (*env)->NewDirectByteBuffer(env, (void*)subs, 0);
 }

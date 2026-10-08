@@ -24,6 +24,7 @@
 #include <thread>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <regex>
 
 using namespace std;
@@ -185,9 +186,20 @@ struct ZCM_TRANS_CLASSNAME : public zcm_trans_t
         assert(0 && "unreachable");
     }
 
+    bool validChannelPath(const string& channel)
+    {
+        if (type != IPC) return true;
+        const string path = "/tmp/" + subnet + "/" + IPC_NAME_PREFIX + channel;
+        if (path.size() < sizeof(sockaddr_un::sun_path)) return true;
+        fprintf(stderr, "ZCM Error: IPC socket path is too long (%zu bytes, max is %zu): %s\n",
+                path.size(), sizeof(sockaddr_un::sun_path) - 1, path.c_str());
+        return false;
+    }
+
     // May return null if it cannot create a new pubsock
     void *pubsockFindOrCreate(const string& channel)
     {
+        if (!validChannelPath(channel)) return nullptr;
         auto it = pubsocks.find(channel);
         if (it != pubsocks.end())
             return it->second.first;
@@ -209,6 +221,7 @@ struct ZCM_TRANS_CLASSNAME : public zcm_trans_t
         rc = zmq_setsockopt(sock, ZMQ_SNDHWM, &pubhwm, sizeof(pubhwm));
         if (rc == -1) {
             ZCM_DEBUG("failed to set pub high water mark: %s", zmq_strerror(errno));
+            zmq_close(sock);
             lockfile_unlock(lf);
             return nullptr;
         }
@@ -216,6 +229,7 @@ struct ZCM_TRANS_CLASSNAME : public zcm_trans_t
         rc = zmq_bind(sock, address.c_str());
         if (rc == -1) {
             ZCM_DEBUG("failed to bind pubsock: %s", zmq_strerror(errno));
+            zmq_close(sock);
             lockfile_unlock(lf);
             return nullptr;
         }
@@ -227,6 +241,7 @@ struct ZCM_TRANS_CLASSNAME : public zcm_trans_t
     // May return null if it cannot create a new subsock
     void *subsockFindOrCreate(const string& channel, bool subExplicit)
     {
+        if (!validChannelPath(channel)) return nullptr;
         auto it = subsocks.find(channel);
         if (it != subsocks.end()) {
             it->second.second |= subExplicit;
@@ -241,17 +256,20 @@ struct ZCM_TRANS_CLASSNAME : public zcm_trans_t
         rc = zmq_setsockopt(sock, ZMQ_RCVHWM, &subhwm, sizeof(subhwm));
         if (rc == -1) {
             ZCM_DEBUG("failed to set sub high water mark: %s", zmq_strerror(errno));
+            zmq_close(sock);
             return nullptr;
         }
         string address = getAddress(channel);
         rc = zmq_connect(sock, address.c_str());
         if (rc == -1) {
             ZCM_DEBUG("failed to connect subsock: %s", zmq_strerror(errno));
+            zmq_close(sock);
             return nullptr;
         }
         rc = zmq_setsockopt(sock, ZMQ_SUBSCRIBE, "", 0);
         if (rc == -1) {
             ZCM_DEBUG("failed to setsockopt on subsock: %s", zmq_strerror(errno));
+            zmq_close(sock);
             return nullptr;
         }
         subsocks.emplace(channel, make_pair(sock, subExplicit));
@@ -350,6 +368,7 @@ struct ZCM_TRANS_CLASSNAME : public zcm_trans_t
     {
         assert(channel && "channel cannot be null");
         bool regex = isRegexChannel(channel);
+        if (!regex && !validChannelPath(channel)) return ZCM_EINVALID;
         // Mutex used to protect 'subsocks' while allowing
         // recvmsgEnable() and recvmsg() to be called
         // concurrently

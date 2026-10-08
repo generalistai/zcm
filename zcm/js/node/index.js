@@ -39,7 +39,8 @@ var libzcm = new ffi.Library('libzcm', {
     'zcm_destroy':              ['void',    ['pointer']],
     'zcm_publish':              ['int',     ['pointer', 'string', 'pointer', 'int']],
     'zcm_subscription_channel_limit': ['int', ['pointer', 'string']],
-    'zcm_try_subscribe':        ['pointer', ['pointer', 'string', 'pointer', 'pointer']],
+    'zcm_try_subscribe_ex':     ['int', ['pointer', 'string', 'pointer', 'pointer', 'pointer']],
+    'zcm_strerrno':             ['string', ['int']],
     'zcm_try_unsubscribe':      ['int',     ['pointer', 'pointer']],
     'zcm_start':                ['void',    ['pointer']],
     'zcm_try_stop':             ['int',     ['pointer']],
@@ -217,11 +218,17 @@ function zcm(zcmtypes, zcmurl)
         var dispatcher = makeDispatcher(cb);
         var funcPtr = ffi.Callback('void', [recvBufRef, 'string', 'pointer'], dispatcher);
         setTimeout(function sub() {
-            var subs = libzcm.zcm_try_subscribe(parent.z, channel, funcPtr, null);
-            if (ref.isNull(subs)) {
+            var out = ref.alloc('pointer');
+            var ret = libzcm.zcm_try_subscribe_ex(parent.z, channel, funcPtr, null, out);
+            if (ret === ZCM_EAGAIN) {
                 setTimeout(sub, 0);
                 return;
             }
+            if (ret !== ZCM_EOK) {
+                throw new Error('ZCM subscription to "' + channel + '" failed: ' +
+                                libzcm.zcm_strerrno(ret) + ' (' + ret + ')');
+            }
+            var subs = out.deref();
             const id = parent.currSubId;
             parent.subscriptions[parent.currSubId] = {
               "id"                : id,

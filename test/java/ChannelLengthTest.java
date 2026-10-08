@@ -2,6 +2,8 @@ import zcm.zcm.ZCM;
 import zcm.zcm.ZCMSubscriber;
 
 import java.util.concurrent.CountDownLatch;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
 public class ChannelLengthTest
@@ -63,8 +65,26 @@ public class ChannelLengthTest
         }
     }
 
+    private static void checkIpcFailure() throws Exception
+    {
+        Path directory = Files.createTempDirectory("zcm-ipc-");
+        ZCM zcm = new ZCM("ipc://" + directory.getFileName());
+        try {
+            try {
+                zcm.subscribe(repeat("a", ZCM.CHANNEL_MAXLEN), IGNORE);
+                throw new AssertionError("Oversized IPC endpoint was accepted");
+            } catch (IllegalStateException expected) {}
+            ZCM.Subscription sub = zcm.subscribe("event", IGNORE);
+            if (zcm.unsubscribe(sub) != 0) throw new AssertionError("Unsubscribe failed");
+        } finally {
+            zcm.close();
+            Files.delete(directory);
+        }
+    }
+
     public static void main(String[] args) throws Exception
     {
+        checkIpcFailure();
         checkAccepted(repeat("a", ZCM.CHANNEL_MAXLEN));
         checkRejected(repeat("a", ZCM.CHANNEL_MAXLEN + 1));
         checkAccepted("(" + repeat("a", ZCM.CHANNEL_MAXLEN) + "|event)", "event");

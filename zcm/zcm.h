@@ -123,6 +123,14 @@ int zcm_subscription_channel_limit(const zcm_t* zcm, const char* channel);
    Returns a subscription object on success, and NULL on failure */
 zcm_sub_t* zcm_subscribe(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb, void* usr);
 
+/* Status-returning subscription APIs. On failure, *sub is NULL.
+   The try variant returns ZCM_EAGAIN when locks are busy; bindings should retry
+   only ZCM_EAGAIN, not permanent transport or argument errors. */
+int zcm_subscribe_ex(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb,
+                     void* usr, zcm_sub_t** sub);
+int zcm_try_subscribe_ex(zcm_t* zcm, const char* channel, zcm_msg_handler_t cb,
+                         void* usr, zcm_sub_t** sub);
+
 /* Unsubscribe to zcm messages, freeing the subscription object
    Returns ZCM_EOK on success, error code on failure */
 int zcm_unsubscribe(zcm_t* zcm, zcm_sub_t* sub);

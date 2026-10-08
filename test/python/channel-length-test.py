@@ -1,4 +1,6 @@
 import unittest
+import os
+import tempfile
 
 from zerocm import CHANNEL_MAXLEN, ZCM, ZCM_EOK
 
@@ -79,6 +81,28 @@ class ChannelLengthTest(unittest.TestCase):
             zcm.unsubscribe(sentinel)
             with self.assertRaises(ValueError):
                 zcm.publish_raw(pattern, b"payload")
+
+    def test_named_ipc_path_failure_does_not_retry(self):
+        with tempfile.TemporaryDirectory(prefix="zcm-ipc-") as directory:
+            zcm = ZCM("ipc://" + os.path.basename(directory))
+            self.assertTrue(zcm.good())
+            for typed in (False, True):
+                handler = lambda name, data: None
+                with self.assertRaisesRegex(RuntimeError, "subscription.*Invalid arguments"):
+                    if typed:
+                        zcm.subscribe("a" * CHANNEL_MAXLEN, Message, handler)
+                    else:
+                        zcm.subscribe_raw("a" * CHANNEL_MAXLEN, handler)
+                sub = zcm.subscribe_raw("event", handler)
+                zcm.unsubscribe(sub)
+            del zcm
+
+    def test_invalid_regex_does_not_retry(self):
+        for url, pattern in (("block-inproc", "("), ("nonblock-inproc", "a|b")):
+            zcm = ZCM(url)
+            with self.assertRaisesRegex(RuntimeError, "subscription.*Invalid arguments"):
+                zcm.subscribe_raw(pattern, lambda name, data: None)
+
 
     def test_nonblocking_regex_still_has_a_length_limit(self):
         zcm = ZCM("nonblock-inproc")

@@ -19,6 +19,9 @@ int zcm_blocking_publish(zcm_blocking_t* zcm, const char* channel,
 zcm_sub_t* zcm_blocking_subscribe(zcm_blocking_t* zcm, const char* channel,
                                   zcm_msg_handler_t cb, void* usr);
 
+int zcm_blocking_subscribe_ex(zcm_blocking_t* zcm, const char* channel,
+                              zcm_msg_handler_t cb, void* usr, zcm_sub_t** sub, bool block);
+
 int zcm_blocking_unsubscribe(zcm_blocking_t* zcm, zcm_sub_t* sub);
 
 void zcm_blocking_flush(zcm_blocking_t* zcm);

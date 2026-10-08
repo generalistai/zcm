@@ -33,3 +33,14 @@ using Test
         ZCM.destroy(z)
     end
 end
+
+@testset "Permanent IPC subscription failures" begin
+    mktempdir("/tmp"; prefix="zcm-ipc-") do directory
+        z = Zcm("ipc://" * basename(directory))
+        @test good(z)
+        @test_throws ErrorException subscribe(z, repeat("a", CHANNEL_MAXLEN), (r, c, d) -> nothing)
+        sub = subscribe(z, "event", (r, c, d) -> nothing)
+        @test unsubscribe(z, sub) == 0
+        ZCM.destroy(z)
+    end
+end
