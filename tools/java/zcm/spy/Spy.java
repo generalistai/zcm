@@ -4,10 +4,10 @@ import javax.swing.*;
 import javax.swing.table.*;
 import java.awt.*;
 import java.awt.event.*;
-import java.awt.geom.AffineTransform;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import zcm.util.*;
 import java.lang.reflect.*;
 
@@ -32,6 +32,31 @@ public class Spy
     ArrayList<SpyPlugin> plugins = new ArrayList<SpyPlugin>();
 
     JButton clearButton = new JButton("Clear");
+    private final AtomicBoolean tableRefreshPending = new AtomicBoolean();
+
+    private void refreshChannelTable()
+    {
+        if (tableRefreshPending.compareAndSet(false, true)) {
+            SwingUtilities.invokeLater(new Runnable() {
+                public void run()
+                {
+                    tableRefreshPending.set(false);
+                    int row = channelTable.getSelectedRow();
+                    ChannelData selected = row < 0 || row >= channelTable.getRowCount() ? null :
+                        _channelTableModel.channelAt(channelTableModel.modelIndex(row));
+                    ArrayList<ChannelData> snapshot;
+                    synchronized (channelList) { snapshot = new ArrayList<ChannelData>(channelList); }
+                    _channelTableModel.setChannels(snapshot);
+                    int modelRow = selected == null ? -1 : _channelTableModel.indexOf(selected);
+                    if (modelRow >= 0) for (int viewRow = 0; viewRow < channelTable.getRowCount(); viewRow++) {
+                        if (channelTableModel.modelIndex(viewRow) == modelRow) {
+                            channelTable.setRowSelectionInterval(viewRow, viewRow); break;
+                        }
+                    }
+                }
+            });
+        }
+    }
 
     public Spy(String zcmurl, WindowTitleOptions titleOptions) throws IOException
     {
@@ -49,19 +74,28 @@ public class Spy
         //    sortedChannelTableModel.addMouseListenerToHeaderInTable(channelTable);
         channelTableModel.setTableHeader(channelTable.getTableHeader());
         channelTableModel.setSortingStatus(0, TableSorter.ASCENDING);
+        // for (int column = 2; column < channelTable.getColumnCount(); column++)
+        //     channelTable.getColumnModel().getColumn(column).setCellRenderer(SpyFonts.numbers());
+        // // channelTable.setRowHeight(Math.max(channelTable.getFontMetrics(channelTable.getFont()).getHeight(),
+            // channelTable.getFontMetrics(SpyFonts.monospace(channelTable.getFont())).getHeight()) + 2);
 
         handlers = new ZCMTypeDatabase();
 
         TableColumnModel tcm = channelTable.getColumnModel();
         tcm.getColumn(0).setMinWidth(140);
         tcm.getColumn(1).setMinWidth(140);
-        tcm.getColumn(2).setMaxWidth(100);
-        tcm.getColumn(3).setMaxWidth(100);
-        tcm.getColumn(4).setMaxWidth(100);
-        tcm.getColumn(5).setMaxWidth(100);
-        tcm.getColumn(6).setMaxWidth(100);
+        tcm.getColumn(2).setMaxWidth(140);
+        tcm.getColumn(3).setMaxWidth(140);
+        for (int column = 4; column <= 6; column++) {
+            tcm.getColumn(column).setMinWidth(90);
+            tcm.getColumn(column).setPreferredWidth(90);
+            tcm.getColumn(column).setMaxWidth(140);
+        }
 
         JFrame jif = new JFrame(title);
+        SpyIcons.window(jif);
+        SpyIcons.decorate(clearButton, SpyIcons.Symbol.CLEAR);
+        clearButton.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
         jif.setLayout(new BorderLayout());
         jif.add(channelTable.getTableHeader(), BorderLayout.PAGE_START);
         // XXX weird bug, if clearButton is added after JScrollPane, we get an error.
@@ -69,15 +103,12 @@ public class Spy
         jif.add(new JScrollPane(channelTable), BorderLayout.CENTER);
 
         chartData = new ChartData(utime_now());
-
-        // if (isHiDpi()) {
-        //     System.out.println("HiDPI detected, setting UI scale to 2.0");
-        //     System.setProperty("sun.java2d.uiScale", "2.0");
-        // } else {
-        //     System.out.println("HiDPI not detected, not setting UI scale");
-        // }
-         //Float.toString(scaleFactor));
-        // SwingDPI.scaleFactor = scaleFeactor;
+        chartData.signalSource = new SignalCatalog.Source() {
+            public java.util.List<ChannelData> channels() {
+                synchronized (channelList) { return new ArrayList<ChannelData>(channelList); }
+            }
+            public ObjectPanel inspector(ChannelData channel) { return viewerFor(channel); }
+        };
 
         jif.setSize(800,600);
         jif.setLocationByPlatform(true);
@@ -95,9 +126,8 @@ public class Spy
         {
             public void actionPerformed(ActionEvent e)
             {
-                channelMap.clear();
-                channelList.clear();
-                channelTableModel.fireTableDataChanged();
+                synchronized (channelList) { channelMap.clear(); channelList.clear(); }
+                _channelTableModel.setChannels(Collections.<ChannelData>emptyList());
             }
         });
 
@@ -115,8 +145,8 @@ public class Spy
                 {
                     Point p = e.getPoint();
                     int row = rowAtPoint(p);
-
-                    ChannelData cd = channelList.get(row);
+                    ChannelData cd = _channelTableModel.channelAt(row);
+                    if (cd == null) return;
                     boolean got_one = false;
                     for (SpyPlugin plugin : plugins)
                     {
@@ -130,7 +160,7 @@ public class Spy
                     }
 
                     if (!got_one)
-                        createViewer(channelList.get(row));
+                        createViewer(cd);
                 }
             }
         });
@@ -184,6 +214,7 @@ public class Spy
                 // plugin by calling its actionPerformed method
 
                 JFrame pluginFrame = new JFrame(cd.name);
+                SpyIcons.window(pluginFrame);
                 pluginFrame.setLayout(new BorderLayout());
                 JDesktopPane pluginJdp = new JDesktopPane();
                 pluginFrame.add(pluginJdp);
@@ -216,39 +247,33 @@ public class Spy
         }
     }
 
+    ObjectPanel viewerFor(ChannelData cd)
+    {
+        if (cd.viewer == null) {
+            ObjectPanel viewer = new ObjectPanel(cd.name, chartData);
+            viewer.setObject(cd.last, cd.last_utime);
+            cd.viewer = viewer;
+        }
+        return cd.viewer;
+    }
+
     void createViewer(ChannelData cd)
     {
 
-        if (cd.viewerFrame != null && !cd.viewerFrame.isVisible())
-        {
-            cd.viewerFrame.dispose();
-            cd.viewer = null;
-        }
-
-        if (cd.viewer == null) {
+        if (cd.viewerFrame == null) {
             cd.viewerFrame = new JFrame(cd.name);
+            SpyIcons.window(cd.viewerFrame);
 
-            cd.viewer = new ObjectPanel(cd.name, chartData);
+            viewerFor(cd);
 
             //    cd.viewer = new ObjectViewer(cd.name, cd.cls, null);
             cd.viewerFrame.setLayout(new BorderLayout());
 
-            // default scroll speed is too slow, so increase it
-            JScrollPane viewerScrollPane = new JScrollPane(cd.viewer);
-            viewerScrollPane.getVerticalScrollBar().setUnitIncrement(16);
+            cd.viewerFrame.add(cd.viewer, BorderLayout.CENTER);
             
-            // we need to tell the viewer what its viewport is so that it can
-            // make smart decisions about which elements are in view of the user
-            // so it can avoid drawing items outside the view
-            cd.viewer.setViewport(viewerScrollPane.getViewport());
-            
-            cd.viewerFrame.add(viewerScrollPane, BorderLayout.CENTER);
-            
-            cd.viewer.setObject(cd.last, cd.last_utime);
-
             //jdp.add(cd.viewerFrame);
 
-            cd.viewerFrame.setSize(650,400);
+            ZoomableChartScrollWheel.fitToScreen(cd.viewerFrame, 1100, 700);
             cd.viewerFrame.setLocationByPlatform(true);
             cd.viewerFrame.setVisible(true);
         } else {
@@ -262,87 +287,12 @@ public class Spy
         return System.nanoTime()/1000;
     }
 
-    class ChannelTableModel extends AbstractTableModel
-    {
-        public int getColumnCount()
-        {
-            return 8;
-        }
-
-        public int getRowCount()
-        {
-            return channelList.size();
-        }
-
-        public Object getValueAt(int row, int col)
-        {
-            ChannelData cd = channelList.get(row);
-            if (cd == null)
-                return "";
-
-            switch (col)
-            {
-                case 0:
-                    return cd.name;
-                case 1:
-                    if (cd.cls == null)
-                        return String.format("?? %016x", cd.fingerprint);
-
-                    String s = cd.cls.getName();
-                    return s.substring(s.lastIndexOf('.')+1);
-
-                case 2:
-                    return ""+cd.nreceived;
-                case 3:
-                    return String.format("%6.2f", cd.hz);
-                case 4:
-                    return String.format("%6.2f ms",1000.0/cd.hz); // cd.max_interval/1000.0);
-                case 5:
-                    if (cd.hz_num_hz_updates > 1 && cd.hz > 0) {
-                        return String.format("%6.2f ms",(cd.max_interval - cd.min_interval)/1000.0);
-                    } else {
-                        return " -";
-                    }
-                case 6:
-                    return String.format("%6.2f KB/s", (cd.bandwidth/1024.0));
-                case 7:
-                    return ""+cd.nerrors;
-            }
-            return "???";
-        }
-
-        public String getColumnName(int col)
-        {
-            switch (col)
-            {
-                case 0:
-                    return "Channel";
-                case 1:
-                    return "Type";
-                case 2:
-                    return "Num Msgs";
-                case 3:
-                    return "Hz";
-                case 4:
-                    return "1/Hz";
-                case 5:
-                    return "Jitter";
-                case 6:
-                    return "Bandwidth";
-                case 7:
-                    return "Undecodable";
-            }
-            return "???";
-        }
-
-    }
-
     class MySubscriber implements ZCMSubscriber
     {
         public void messageReceived(ZCM zcm, String channel, ZCMDataInputStream dins)
         {
             Object o = null;
-            ChannelData cd = channelMap.get(channel);
+            ChannelData cd = null;
             int msg_size = 0;
 
             try {
@@ -352,20 +302,22 @@ public class Spy
 
                 Class cls = handlers.getClassByFingerprint(fingerprint);
 
-                if (cd == null) {
-                    cd = new ChannelData();
-                    cd.name = channel;
-                    cd.cls = cls;
-                    cd.fingerprint = fingerprint;
-                    cd.row = channelList.size();
-
-                    synchronized(channelList) {
+                boolean added = false;
+                synchronized (channelList) {
+                    cd = channelMap.get(channel);
+                    if (cd == null) {
+                        cd = new ChannelData();
+                        cd.name = channel;
+                        cd.cls = cls;
+                        cd.fingerprint = fingerprint;
+                        cd.row = channelList.size();
                         channelMap.put(channel, cd);
                         channelList.add(cd);
-                        _channelTableModel.fireTableDataChanged();
+                        added = true;
                     }
-
-                } else {
+                }
+                if (added) refreshChannelTable();
+                else {
                     if (cls != null && cd.cls != null && !cd.cls.equals(cls)) {
                         System.out.println("WARNING: Class changed for channel "+channel);
                         cd.nerrors++;
@@ -381,16 +333,22 @@ public class Spy
 
                 cd.nreceived++;
 
-                o = cd.cls.getConstructor(ZCMDataInputStream.class).newInstance(dins);
+                if (cd.cls == null) {
+                    cd.nerrors++;
+                    return;
+                }
+                if (cd.decoder == null)
+                    cd.decoder = cd.cls.getConstructor(ZCMDataInputStream.class);
+                o = cd.decoder.newInstance(dins);
                 cd.last = o;
 
                 if (cd.viewer != null)
                     cd.viewer.setObject(o, cd.last_utime);
 
             } catch (NullPointerException ex) {
-                cd.nerrors++;
+                if (cd != null) cd.nerrors++;
             } catch (IOException ex) {
-                cd.nerrors++;
+                if (cd != null) cd.nerrors++;
                 System.out.println("Spy.messageReceived ex: "+ex);
             } catch (NoSuchMethodException ex) {
                 cd.nerrors++;
@@ -448,10 +406,7 @@ public class Spy
                     }
                 }
 
-                int selrow = channelTable.getSelectedRow();
-                channelTableModel.fireTableDataChanged();
-                if (selrow >= 0)
-                    channelTable.setRowSelectionInterval(selrow, selrow);
+                refreshChannelTable();
 
                 try {
                     Thread.sleep(1000);
@@ -481,15 +436,15 @@ public class Spy
     int rowAtPoint(Point p)
     {
         int physicalRow = channelTable.rowAtPoint(p);
-
-        return channelTableModel.modelIndex(physicalRow);
+        return physicalRow < 0 || physicalRow >= channelTable.getRowCount() ? -1 : channelTableModel.modelIndex(physicalRow);
     }
 
     public void showPopupMenu(MouseEvent e)
     {
         Point p = e.getPoint();
         int row = rowAtPoint(p);
-        ChannelData cd = channelList.get(row);
+        ChannelData cd = _channelTableModel.channelAt(row);
+        if (cd == null) return;
         JPopupMenu jm = new JPopupMenu("Viewers");
 
         int prow = channelTable.rowAtPoint(p);
@@ -544,42 +499,11 @@ public class Spy
         boolean showURL = false;
     }
 
-    private static int getScreenDPI() {
-        // A bit of a hack to detect screen DPI.  If you do this through Java, it's already too late to set the uiScale property.
-        try {
-            // Execute the command through a shell
-            String[] cmd = {"/bin/sh", "-c", "xdpyinfo | grep resolution | awk '{print $2}'"};
-            Process process = Runtime.getRuntime().exec(cmd);
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            BufferedReader errorReader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String[] dpiValues = line.split("x");
-                int dpiX = Integer.parseInt(dpiValues[0]);
-                int dpiY = Integer.parseInt(dpiValues[1]);
-                return (dpiX + dpiY) / 2; // Average the DPI values
-            }
-            // Print any errors from the command execution
-            while ((line = errorReader.readLine()) != null) {
-                System.err.println("Error: " + line);
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        // Default DPI if unable to fetch
-        return 96;
-    }
-    
     public static void main(String args[])
     {
-        int screenDpi = getScreenDPI();
-        System.out.println("Screen DPI: " + screenDpi);
-        if (screenDpi == 144) {
-            System.setProperty("sun.java2d.uiScale", "2.0");
-        }
-        // System.out.println(Double.toString(Math.round(getScreenDPI() / 96.0)));
-        // System.out.println(Double.toString(Math.round(148.0 / 96.0)));
-        // System.setProperty("sun.java2d.uiScale", "1.5");//Double.toString(Math.round(getScreenDPI() / 96.0)));
+        // Must run before constructing any Swing components or querying AWT.
+        SpyUiScale.configure();
+        SpyAppearance.configure();
 
         // check if the JRE is supplied by gcj, and warn the user if it is.
         if(System.getProperty("java.vendor").indexOf("Free Software Foundation") >= 0) {
@@ -632,10 +556,10 @@ public class Spy
             }
         }
 
-        try {
-            new Spy(zcmurl, titleOptions);
-        } catch (IOException ex) {
-            System.out.println(ex);
-        }
+        final String url = zcmurl;
+        SwingUtilities.invokeLater(() -> {
+            try { new Spy(url, titleOptions); }
+            catch (IOException ex) { System.out.println(ex); }
+        });
     }
 }
