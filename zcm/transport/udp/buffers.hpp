@@ -2,6 +2,7 @@
 
 #include "udp.hpp"
 #include "mempool.hpp"
+#include <chrono>
 
 /************************* Packet Headers *******************/
 
@@ -127,14 +128,24 @@ struct Packet
 /******************** fragment buffer **********************/
 struct FragBuf
 {
+    struct Fragment {
+        u32 offset = 0;
+        u32 size = 0;
+        bool received = false;
+    };
+
     i64     last_packet_utime;
     u32     msg_seqno;
+    u32     data_size;
     u16     fragments_remaining;
 
-    // The channel starts at the beginning of the buffer. The data
-    // follows immediately after the channel and its NULL
+    // Reserve channel space even before fragment zero arrives. Payload starts
+    // after that reservation (limited by the allocator MTU for large payloads).
     size_t  channellen;
     struct sockaddr_in from;
+    vector<Fragment> fragments;
+    size_t allocated_size;
+    std::chrono::steady_clock::time_point last_progress;
 
     // Fields set by the allocator object
     Buffer buf;
@@ -162,9 +173,10 @@ struct MessagePool
     void freeMessage(Message *b);
 
     // FragBuf
-    FragBuf *addFragBuf(u32 data_size);
-    FragBuf *lookupFragBuf(struct sockaddr_in *key);
+    FragBuf *addFragBuf(u32 data_size, u16 fragments_in_msg);
+    FragBuf *lookupFragBuf(struct sockaddr_in *key, u32 msg_seqno);
     void removeFragBuf(FragBuf *fbuf);
+    void expireFragBufs();
 
     void transferBufffer(Message *to, FragBuf *from);
     void moveBuffer(Buffer& to, Buffer& from);

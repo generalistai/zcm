@@ -53,6 +53,7 @@ echo "Running python tests"
 echo "**********************************"
 $PYTHON $THISDIR/python/bitfield-test.py
 $PYTHON $THISDIR/python/example-test.py
+ZCM_TEST_LIBRARY="${ZCM_TEST_LIBRARY:-$ROOTDIR/build/zcm/libzcm.so}" "$PYTHON" "$THISDIR/python/udp_reassembly_test.py"
 echo "Success"
 
 echo

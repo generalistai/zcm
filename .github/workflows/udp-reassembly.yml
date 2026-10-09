@@ -1,0 +1,29 @@
+name: UDP reassembly
+on:
+  pull_request:
+    branches: [generalistai-main, master]
+  push:
+    branches: [generalistai-main]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: Regression (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build UDP transport
+        run: |
+          python3 ./waf configure --use-udp
+          python3 ./waf build -j2 --targets=zcm
+      - name: Exercise ordered, reordered, and malformed wire messages
+        env:
+          ZCM_TEST_LIBRARY: ${{ github.workspace }}/build/zcm/libzcm.so
+        run: python3 test/python/udp_reassembly_test.py -v
