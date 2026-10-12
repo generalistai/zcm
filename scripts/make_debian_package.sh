@@ -29,11 +29,6 @@ trap command_failed ERR
 DEB_PACKAGE_ASSEMBLY_DIR=./build/deb_package_root
 mkdir -p $DEB_PACKAGE_ASSEMBLY_DIR/usr/
 
-# Required to find java
-if [ -z ${JAVA_HOME+x} ]; then
-    export JAVA_HOME=$(readlink -f /usr/bin/javac | sed "s:/bin/javac::")
-fi
-
 # Change to the directory containing the source code
 cd $ROOTDIR
 

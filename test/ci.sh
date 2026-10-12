@@ -23,7 +23,6 @@ function command_failed() {
 }
 trap command_failed ERR
 
-export JAVA_HOME=$(readlink -f /usr/bin/javac | sed "s:/bin/javac::")
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
 tmpdir=$(mktemp -d)

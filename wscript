@@ -9,6 +9,8 @@ import os
 import os.path
 import subprocess
 import re
+import glob
+import shlex
 
 # these variables are mandatory ('/' are converted automatically)
 top = '.'
@@ -51,6 +53,8 @@ def add_zcm_configure_options(ctx):
 
     add_use_option('all',         'Attempt to enable every ZCM feature')
     add_use_option('java',        'Enable java features')
+    gr.add_option('--jchart2d-jar', dest='jchart2d_jar',
+                  help='Path to jchart2d.jar (otherwise detected automatically)')
     add_use_option('nodejs',      'Enable nodejs features')
     add_use_option('python',      'Enable python features')
     add_use_option('julia',       'Enable julia features')
@@ -238,9 +242,60 @@ def process_zcm_configure_options(ctx):
     Logs.pprint('NORMAL', '')
 
 def attempt_use_java(ctx):
-    ctx.load('java')
-    ctx.check_jni_headers()
-    return True
+    try:
+        ctx.load('java')
+        if not ctx.env.JAVA_HOME:
+            # Resolve alternatives/symlinks to the JDK selected on PATH.
+            java_home = os.path.dirname(os.path.dirname(os.path.realpath(ctx.env.JAVAC[0])))
+            if sys.platform == 'darwin' and not os.path.isfile(os.path.join(java_home, 'include', 'jni.h')):
+                java_home = ctx.cmd_and_log(['/usr/libexec/java_home']).strip()
+            ctx.env.JAVA_HOME = [java_home]
+        ctx.msg('Java home', ctx.env.JAVA_HOME[0])
+        ctx.check_jni_headers()
+    except WafError as exc:
+        ctx.fatal('%s\nJava support requires a JDK with JNI headers. On Debian/Ubuntu, run:\n'
+                  '  sudo apt install default-jdk\n'
+                  'For a custom JDK, set JAVA_HOME to its installation directory.' % exc)
+
+    explicit = ctx.options.jchart2d_jar
+    candidates = []
+    if explicit:
+        candidates.append(os.path.abspath(os.path.expanduser(explicit)))
+    else:
+        for entry in ctx.environ.get('CLASSPATH', '').split(os.pathsep):
+            if entry:
+                candidates.extend(sorted(glob.glob(os.path.expanduser(entry))))
+        for directory in [os.path.join(ctx.env.PREFIX, 'share', 'java'),
+                          '/usr/local/share/java', '/usr/share/java']:
+            candidates.append(os.path.join(directory, 'jchart2d.jar'))
+            candidates.extend(sorted(glob.glob(os.path.join(directory, 'jchart2d-*.jar'))))
+
+    # Test each jar in isolation so an unrelated ambient CLASSPATH cannot
+    # make an invalid override appear usable.
+    classpath = ctx.env.CLASSPATH
+    ctx.env.CLASSPATH = ''
+    seen = set()
+    try:
+        for candidate in candidates:
+            candidate = os.path.abspath(candidate)
+            realpath = os.path.realpath(candidate)
+            if realpath in seen or not os.path.isfile(candidate) or not candidate.endswith('.jar'):
+                continue
+            seen.add(realpath)
+            if ctx.check_java_class('info.monitorenter.gui.chart.Chart2D', candidate) == 0:
+                ctx.env.CLASSPATH_jchart2d = [candidate]
+                ctx.env.JCHART2D_JAR_SHELL = shlex.quote(candidate)
+                ctx.msg('jchart2d jar', candidate)
+                return True
+    finally:
+        ctx.env.CLASSPATH = classpath
+
+    ctx.fatal('Could not find a usable jchart2d jar%s. Java tools require jchart2d.\n'
+              'On Debian/Ubuntu, run:\n'
+              '  sudo apt install libjchart2d-java\n'
+              'On other systems, install jchart2d with your package manager or download its jar,\n'
+              'then configure with --jchart2d-jar=/path/to/jchart2d.jar.' %
+              (' at ' + explicit if explicit else ''))
 
 def attempt_use_nodejs(ctx):
     # nodejs isn't really required for build, but it felt weird to leave it

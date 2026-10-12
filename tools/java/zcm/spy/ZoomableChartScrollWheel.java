@@ -1,7 +1,12 @@
 package zcm.spy;
 
 import java.awt.Color;
+import java.awt.BasicStroke;
+import java.awt.BorderLayout;
 import java.awt.Container;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
@@ -13,13 +18,16 @@ import java.awt.event.WindowFocusListener;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import info.monitorenter.gui.chart.IAxis;
 import info.monitorenter.gui.chart.ITrace2D;
 import info.monitorenter.gui.chart.ZoomableChart;
 import info.monitorenter.gui.chart.axis.AAxis;
 import info.monitorenter.gui.chart.axis.AxisLinear;
 import info.monitorenter.gui.chart.labelformatters.LabelFormatterNumber;
-import info.monitorenter.gui.chart.traces.Trace2DLtd;
+import info.monitorenter.gui.chart.rangepolicies.RangePolicyFixedViewport;
+import info.monitorenter.util.Range;
 import javax.swing.*;
 
 /**
@@ -48,6 +56,323 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     private JPopupMenu popup = new JPopupMenu();
     
     ChartData chartData;
+    private ChartControls controls;
+    private boolean paused, following, timeLinked;
+    private double windowSeconds = 5;
+    private double cursorTime = Double.NaN, cursorA = Double.NaN, cursorB = Double.NaN;
+    private int armedCursor;
+    private final Map<ITrace2D, Boolean> beforeSolo = new LinkedHashMap<ITrace2D, Boolean>();
+    private ITrace2D soloTrace;
+
+    ChartControls controls()
+    {
+        if (controls == null) controls = new ChartControls(this);
+        return controls;
+    }
+
+    boolean isPaused() { return paused; }
+    boolean isFollowing() { return following; }
+    boolean isTimeLinked() { return timeLinked; }
+    double getWindowSeconds() { return windowSeconds; }
+    double getCursorTime() { return cursorTime; }
+    double getCursorA() { return cursorA; }
+    double getCursorB() { return cursorB; }
+    int getArmedCursor() { return armedCursor; }
+
+    double latestTime()
+    {
+        double time = Double.NEGATIVE_INFINITY;
+        for (ITrace2D trace : getTraces())
+            if (trace.getSize() > 0) time = Math.max(time, trace.getMaxX());
+        return time;
+    }
+
+    double retainedSeconds()
+    {
+        double start = Double.POSITIVE_INFINITY, end = Double.NEGATIVE_INFINITY;
+        for (ITrace2D trace : getTraces()) {
+            if (trace.getSize() == 0) continue;
+            start = Math.min(start, trace.getMinX()); end = Math.max(end, trace.getMaxX());
+        }
+        return Double.isFinite(start) ? end - start : 0;
+    }
+
+    double earliestTime()
+    {
+        double time = Double.POSITIVE_INFINITY;
+        for (ITrace2D trace : getTraces())
+            if (trace.getSize() > 0) time = Math.min(time, trace.getMinX());
+        return time;
+    }
+
+    void applyPaused(boolean value)
+    {
+        if (paused == value) return;
+        for (ITrace2D trace : getTraces()) {
+            if (trace instanceof StreamingTrace) {
+                StreamingTrace stream = (StreamingTrace)trace;
+                if (value) stream.flush();
+                stream.setPaused(value);
+                if (!value) stream.flush();
+            }
+        }
+        paused = value;
+        if (controls != null) controls.refresh();
+        repaint();
+    }
+
+    void setPaused(boolean value)
+    {
+        applyPaused(value);
+        chartData.linkPause(this, value);
+        refreshView();
+    }
+
+    void goLive()
+    {
+        following = true;
+        setFixedWidthXAxisFormat();
+        setPaused(false);
+        refreshView();
+        chartData.linkView(this);
+    }
+
+    void setTimeWindow(double seconds)
+    {
+        windowSeconds = Math.max(0, seconds);
+        following = true;
+        setFixedWidthXAxisFormat();
+        applyTimeWindow(chartData.latestTime(this));
+        chartData.linkView(this);
+        if (controls != null) controls.refresh();
+    }
+
+    private void applyTimeWindow(double end)
+    {
+        if (!Double.isFinite(end)) return;
+        if (windowSeconds == 0) {
+            double start = chartData.earliestTime(this);
+            if (!Double.isFinite(start)) start = end;
+            setTimeRange(start, Math.max(start + .001, end));
+        } else setTimeRange(end - windowSeconds, end);
+    }
+
+    void refreshView()
+    {
+        if (following && !paused) applyTimeWindow(chartData.latestTime(this));
+        if (controls != null && controls.isShowing()) controls.refresh();
+    }
+
+    private void setTimeRange(double min, double max)
+    {
+        if (!Double.isFinite(min) || !Double.isFinite(max) || min >= max) return;
+        if (getAxisX().getRangePolicy() instanceof RangePolicyFixedViewport) {
+            Range range = getAxisX().getRangePolicy().getRange();
+            if (range.getMin() != min || range.getMax() != max)
+                getAxisX().getRangePolicy().setRange(new Range(min, max));
+        } else getAxisX().setRangePolicy(new RangePolicyFixedViewport(new Range(min, max)));
+    }
+
+    void manualTimeViewChanged()
+    {
+        following = false;
+        chartData.linkView(this);
+        if (controls != null) controls.refresh();
+    }
+
+    void setTimeLinked(boolean linked)
+    {
+        timeLinked = linked;
+        if (linked) {
+            for (ZoomableChartScrollWheel chart : chartData.getCharts()) {
+                if (chart != this && chart.isTimeLinked()) {
+                    applyPaused(chart.paused);
+                    copyTimeView(chart); copyCursors(chart);
+                    break;
+                }
+            }
+        }
+        if (controls != null) controls.refresh();
+    }
+
+    void copyTimeView(ZoomableChartScrollWheel source)
+    {
+        following = source.following;
+        windowSeconds = source.windowSeconds;
+        setTimeRange(source.getAxisX().getMin(), source.getAxisX().getMax());
+        if (following) setFixedWidthXAxisFormat(); else setVariableWidthXAxisFormat();
+        if (controls != null) controls.refresh();
+        repaint();
+    }
+
+    void copyCursors(ZoomableChartScrollWheel source)
+    {
+        cursorTime = source.cursorTime; cursorA = source.cursorA; cursorB = source.cursorB;
+        if (controls != null) controls.refreshReadouts();
+        repaint();
+    }
+
+    void setCursorTime(double time)
+    {
+        cursorTime = time;
+        chartData.linkHover(this);
+        // Mouse motion may arrive hundreds of times per second. Use the existing
+        // 30 Hz chart timer; ChartData.refreshView updates the legend at that rate.
+        setRequestedRepaint(true);
+    }
+
+    void copyHover(ZoomableChartScrollWheel source)
+    {
+        cursorTime = source.cursorTime;
+        setRequestedRepaint(true);
+    }
+
+    void armCursor(int cursor)
+    {
+        armedCursor = cursor; requestFocusInWindow();
+        if (controls != null) controls.refreshReadouts();
+    }
+
+    void pinCursor(int cursor, double time)
+    {
+        if (!Double.isFinite(time)) return;
+        if (cursor == 1) cursorA = time;
+        else cursorB = time;
+        armedCursor = 0;
+        chartData.linkCursors(this);
+        if (controls != null) controls.refreshReadouts();
+        repaint();
+    }
+
+    void clearCursors()
+    {
+        cursorA = cursorB = Double.NaN; armedCursor = 0;
+        chartData.linkCursors(this);
+        if (controls != null) controls.refreshReadouts();
+        repaint();
+    }
+
+    void setTraceVisible(ITrace2D trace, boolean visible)
+    {
+        restoreSolo(); trace.setVisible(visible);
+        if (controls != null) controls.rebuildLegend();
+        repaint();
+    }
+
+    boolean isSolo(ITrace2D trace) { return soloTrace == trace; }
+
+    private void restoreSolo()
+    {
+        for (Map.Entry<ITrace2D, Boolean> entry : beforeSolo.entrySet())
+            if (getTraces().contains(entry.getKey())) entry.getKey().setVisible(entry.getValue());
+        beforeSolo.clear(); soloTrace = null;
+    }
+
+    void solo(ITrace2D trace)
+    {
+        if (soloTrace == trace) restoreSolo();
+        else {
+            if (soloTrace == null)
+                for (ITrace2D item : getTraces()) beforeSolo.put(item, item.isVisible());
+            soloTrace = trace;
+            for (ITrace2D item : getTraces()) item.setVisible(item == trace);
+        }
+        if (controls != null) controls.rebuildLegend();
+        repaint();
+    }
+
+    String axisName(ITrace2D trace)
+    {
+        IAxis<?> axis = getAxisY(trace);
+        int index = rightYAxis.indexOf(axis);
+        return index < 0 ? "Main" : "Y" + (index + 2);
+    }
+
+    String[] axisNames()
+    {
+        ArrayList<String> names = new ArrayList<String>(); names.add("Main");
+        for (int i = 0; i < rightYAxis.size(); i++) names.add("Y" + (i + 2));
+        names.add("New axis"); return names.toArray(new String[0]);
+    }
+
+    void assignAxis(ITrace2D trace, String name)
+    {
+        IAxis<?> old = getAxisY(trace), axis = getAxisY();
+        if ("New axis".equals(name)) {
+            AxisLinear fresh = new AxisLinear(); addAxisYRight(fresh); axis = fresh;
+        } else if (name.startsWith("Y")) {
+            int index = Integer.parseInt(name.substring(1)) - 2;
+            if (index < 0 || index >= rightYAxis.size()) return;
+            axis = rightYAxis.get(index);
+        }
+        if (axis == old) return;
+        removeTrace(trace); addTrace(trace, getAxisX(), axis);
+        if (old != getAxisY() && old.getTraces().isEmpty()) removeAxisYRight(old);
+        updateRightClickMenu(); repaint();
+    }
+
+    void detachTrace(ITrace2D trace)
+    {
+        IAxis<?> axis = getAxisY(trace);
+        // A moved trace should retain its visibility from before Solo.
+        Boolean visible = beforeSolo.remove(trace);
+        removeTrace(trace);
+        if (visible != null) trace.setVisible(visible);
+        if (axis != null && axis != getAxisY() && axis.getTraces().isEmpty()) removeAxisYRight(axis);
+        updateRightClickMenu();
+    }
+
+    private void paintCursors(Graphics2D g)
+    {
+        g.setStroke(new BasicStroke(0));
+        paintCursor(g, cursorTime, new Color(100, 100, 100), "t");
+        paintCursor(g, cursorA, new Color(30, 90, 210), "A");
+        paintCursor(g, cursorB, new Color(190, 90, 0), "B");
+    }
+
+    private void paintCursor(Graphics2D g, double time, Color color, String label)
+    {
+        if (!Double.isFinite(time) || time < getAxisX().getMin() || time > getAxisX().getMax()) return;
+        int x = getAxisX().translateValueToPx(time);
+        g.setColor(color);
+        g.drawLine(x, getYChartEnd(), x, getYChartStart());
+        g.drawString(label, x + 3, getYChartEnd() + 12);
+    }
+
+    @Override
+    public void mouseMoved(MouseEvent e)
+    {
+        if (e.getX() >= getXChartStart() && e.getX() <= getXChartEnd() &&
+            e.getY() >= getYChartEnd() && e.getY() <= getYChartStart())
+            setCursorTime(getAxisX().translatePxToValue(e.getX()));
+        else if (Double.isFinite(cursorTime)) setCursorTime(Double.NaN);
+    }
+
+    @Override
+    public void mouseExited(MouseEvent e)
+    {
+        super.mouseExited(e);
+        if (Double.isFinite(cursorTime)) setCursorTime(Double.NaN);
+    }
+
+    @Override
+    protected void paintComponent(Graphics g)
+    {
+        Graphics2D graphics = (Graphics2D)g.create();
+        graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+                                 RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        try {
+            super.paintComponent(graphics);
+            paintCursors(graphics);
+        } finally {
+            graphics.dispose();
+            // A painter normally resets this itself. Also restore full-history
+            // iteration if the chart library aborts a paint with an exception.
+            for (ITrace2D trace : getTraces())
+                if (trace instanceof StreamingTrace)
+                    ((StreamingTrace)trace).setRendering(false);
+        }
+    }
     
     /**
      * Constructor, taking in a chartData so that we can set up the chart 
@@ -60,7 +385,8 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         
         this.getAxisX().setPaintGrid(true);
         this.getAxisY().setPaintGrid(true);
-        this.setUseAntialiasing(true);
+        this.setUseAntialiasing(false);
+        this.setPaintLabels(false);
         this.setGridColor(Color.LIGHT_GRAY);
         this.getAxisX().getAxisTitle().setTitle("Time (sec)");
         this.getAxisY().getAxisTitle().setTitle("");
@@ -77,7 +403,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         this.setFixedWidthXAxisFormat();
         
         
-        this.setMinPaintLatency(16); // cap the frame-rate at 60fps
+        this.setMinPaintLatency(33); // match the 30 Hz chart data refresh
     }
     
     /**
@@ -90,6 +416,8 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     public static void newChartFrame(final ChartData chartData, final ITrace2D trace)
     {
         JFrame frame = new JFrame(trace.getName());
+        SpyIcons.window(frame);
+        frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         
         final ZoomableChartScrollWheel newChart = new ZoomableChartScrollWheel(chartData);
         
@@ -100,26 +428,43 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         
         chartData.getCharts().add(newChart);
         
-        Container content = frame.getContentPane(); 
-        content.add(newChart);
+        Container content = frame.getContentPane();
+        content.setLayout(new BorderLayout());
+        content.add(newChart.controls(), BorderLayout.NORTH);
+        content.add(newChart, BorderLayout.CENTER);
+        content.add(newChart.controls().legendPanel(), BorderLayout.SOUTH);
+        newChart.goLive();
         
         newChart.addFrameFocusTimer(frame);
         
         frame.addWindowListener(new WindowAdapter()
         {
-            public void windowClosing(WindowEvent e)
+            public void windowClosed(WindowEvent e)
             {
-                for (ITrace2D trace : newChart.getTraces())
+                for (ITrace2D trace : new ArrayList<ITrace2D>(newChart.getTraces()))
                 {
-                    ((Trace2DLtd)trace).setMaxSize(chartData.sparklineChartSize);
+                    chartData.stopTrace(trace);
+                    newChart.removeTrace(trace);
                 }
                 chartData.getCharts().remove(newChart);
+                newChart.destroy();
             }
         });
         
-        frame.setSize(600, 500);
+        fitToScreen(frame, 1100, 750);
         frame.setLocationByPlatform(true);
         frame.setVisible(true);
+    }
+
+    static void fitToScreen(java.awt.Window window, int width, int height)
+    {
+        java.awt.GraphicsConfiguration config = window.getGraphicsConfiguration();
+        java.awt.Rectangle bounds = config.getBounds();
+        java.awt.Insets insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(config);
+        int availableWidth = Math.max(1, bounds.width - insets.left - insets.right);
+        int availableHeight = Math.max(1, bounds.height - insets.top - insets.bottom);
+        window.setSize(Math.min(width, availableWidth), Math.min(height, availableHeight));
+        window.setMinimumSize(new java.awt.Dimension(Math.min(720, availableWidth), Math.min(450, availableHeight)));
     }
     
     /**
@@ -166,6 +511,18 @@ public class ZoomableChartScrollWheel extends ZoomableChart
      */
     public void updateRightClickMenu()
     {
+        for (ITrace2D trace : getTraces()) {
+            if (trace instanceof StreamingTrace) {
+                StreamingTrace stream = (StreamingTrace)trace;
+                if (paused && !stream.isPaused()) stream.flush();
+                stream.setPaused(paused);
+            }
+            if (soloTrace != null && !beforeSolo.containsKey(trace)) {
+                beforeSolo.put(trace, trace.isVisible()); trace.setVisible(false);
+            }
+        }
+        if (soloTrace != null && !getTraces().contains(soloTrace)) restoreSolo();
+        if (controls != null) controls.rebuildLegend();
         // zap the old right click menu
         popup = new JPopupMenu();
         
@@ -203,11 +560,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
                     newItem.addActionListener(new ActionListener() {
                         public void actionPerformed(ActionEvent e)
                         {
-                            ZoomableChartScrollWheel.this.removeAxisYRight(axis);
-                            ZoomableChartScrollWheel.this.removeTrace(trace);
-                            //rightYAxis.remove(axis);
-                            ZoomableChartScrollWheel.this.addTrace(trace);
-                            ZoomableChartScrollWheel.this.updateRightClickMenu();
+                            assignAxis(trace, "Main");
                         }
                     });
                     
@@ -230,12 +583,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
                 newItem.addActionListener(new ActionListener() {
                     public void actionPerformed(ActionEvent e)
                     {
-                        AxisLinear newAxis = new AxisLinear();
-                        ZoomableChartScrollWheel.this.removeTrace(trace);
-                        ZoomableChartScrollWheel.this.addAxisYRight(newAxis);
-                        ZoomableChartScrollWheel.this.addTrace(trace,
-                                ZoomableChartScrollWheel.this.getAxisX(), newAxis);
-                        ZoomableChartScrollWheel.this.updateRightClickMenu();
+                        assignAxis(trace, "New axis");
                     }
                 });
                 
@@ -246,17 +594,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
             moveWindowItem.addActionListener(new ActionListener() {
                 public void actionPerformed(ActionEvent e)
                 {
-                    for (AAxis axisL : rightYAxis)
-                    {
-                        if (axisL.getTraces().contains(trace))
-                        {
-                            ZoomableChartScrollWheel.this.removeAxisYRight(axisL);
-                            break;
-                        }
-                    }
-                    
-                    ZoomableChartScrollWheel.this.removeTrace(trace);
-                    ZoomableChartScrollWheel.this.updateRightClickMenu();
+                    detachTrace(trace);
                     
                     ZoomableChartScrollWheel.newChartFrame(chartData, trace);
                     
@@ -269,17 +607,8 @@ public class ZoomableChartScrollWheel extends ZoomableChart
             delItem.addActionListener(new ActionListener() {
                 public void actionPerformed(ActionEvent e)
                 {
-                    for (AAxis axisL : rightYAxis)
-                    {
-                        if (axisL.getTraces().contains(trace))
-                        {
-                            ZoomableChartScrollWheel.this.removeAxisYRight(axisL);
-                            break;
-                        }
-                    }
-                    
-                    ZoomableChartScrollWheel.this.removeTrace(trace);
-                    ZoomableChartScrollWheel.this.updateRightClickMenu();
+                    detachTrace(trace);
+                    chartData.stopTrace(trace);
                 }
             });
             
@@ -423,7 +752,8 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     public void mouseDragged(MouseEvent e)
     {
         // move the view
-        if ((e.getModifiersEx() & MouseEvent.BUTTON3_DOWN_MASK) != MouseEvent.BUTTON3_DOWN_MASK)
+        if ((e.getModifiersEx() & MouseEvent.BUTTON1_DOWN_MASK) != 0 &&
+            (Math.abs(e.getX() - mouseDownStartX) >= 3 || Math.abs(e.getY() - mouseDownStartY) >= 3))
         {
             dragChart(e);
         }
@@ -434,14 +764,19 @@ public class ZoomableChartScrollWheel extends ZoomableChart
      */
     public void mouseReleased(MouseEvent e)
     {
-        if (e.getClickCount() == 2)
+        if (e.getButton() == MouseEvent.BUTTON1 && e.getClickCount() == 2)
         {
             this.zoomAll();
             setFixedWidthXAxisFormat();
+            goLive();
             
             e.consume();
-        } else {
-            maybeShowPopup(e);
+        } else if (!maybeShowPopup(e) && e.getButton() == MouseEvent.BUTTON1 &&
+                Math.abs(e.getX() - mouseDownStartX) < 3 && Math.abs(e.getY() - mouseDownStartY) < 3 &&
+                e.getX() >= getXChartStart() && e.getX() <= getXChartEnd() &&
+                e.getY() >= getYChartEnd() && e.getY() <= getYChartStart()) {
+            pinCursor(armedCursor != 0 ? armedCursor : Double.isNaN(cursorA) ? 1 : 2,
+                      getAxisX().translatePxToValue(e.getX()));
         }
     }
     
@@ -473,6 +808,7 @@ public class ZoomableChartScrollWheel extends ZoomableChart
                 mouseDownMinY.get(0) + deltaY, mouseDownMaxY.get(0) + deltaY);
         
         setVariableWidthXAxisFormat();
+        manualTimeViewChanged();
         
         // do moving for right Y axes
         for (int i = 0; i < rightYAxis.size(); i++)
@@ -515,6 +851,20 @@ public class ZoomableChartScrollWheel extends ZoomableChart
     
     
     
+    /** Zoom one axis around the cursor without freezing the other axes. */
+    private boolean zoomAxis(IAxis<?> axis, int pixel, double fraction, double factor)
+    {
+        double extent = axis.getRange().getExtent() * factor;
+        double anchor = axis.translatePxToValue(pixel);
+        double min = anchor - extent * fraction;
+        double max = anchor + extent * (1 - fraction);
+        if (!Double.isFinite(min) || !Double.isFinite(max) || min >= max)
+            return false;
+        axis.setRangePolicy(new RangePolicyFixedViewport(new Range(min, max)));
+        if (axis == getAxisX()) manualTimeViewChanged();
+        return true;
+    }
+
     public class MyMouseWheelListener implements MouseWheelListener
     {
         private ZoomableChartScrollWheel chart;
@@ -527,77 +877,33 @@ public class ZoomableChartScrollWheel extends ZoomableChart
         @Override
         public void mouseWheelMoved(MouseWheelEvent e)
         {
-            
-            int notches = e.getWheelRotation();
-         
-            IAxis xAxis = chart.getAxisX();
-            IAxis yAxis = chart.getAxisY();
-            double xAxisRange = xAxis.getRange().getExtent();
-            double yAxisRange = yAxis.getRange().getExtent();
-            
-            double zoomFactor;
-            
-            if (notches > 0)
-            {
-                zoomFactor = notches * 1.2;
-            } else {
-                zoomFactor = -notches * 0.8;
-            }
-            
-            double xSqSize = xAxisRange *  zoomFactor;
-            double ySqSize = yAxisRange *  zoomFactor;
-            
-            
-            // compute percentage of chart the mouse pointer is at
-            double xPercent = ((double) e.getX() - (double) chart.getXChartStart()) / (double)(chart.getXChartEnd() - chart.getXChartStart()); 
-            double yPercent = ((double) e.getY() - (double) chart.getYChartEnd()) / (double)(chart.getYChartStart() - chart.getYChartEnd());
-            
-            // compute new bounds with the percentages remaining the same so whatever
-            // is under the cursor will stay under the cursor
-            
-            
-            // the left most value should be the value the pixel is at minus half of the square size
-            double xValueUnderCursor = xAxis.translatePxToValue(e.getX());
-            
-            double xMin = xValueUnderCursor - xSqSize * xPercent;
-            double xMax = xValueUnderCursor + xSqSize * (1 - xPercent);
-            
-            
-            double yValueUnderCursor = yAxis.translatePxToValue(e.getY());
-            
-            double yMin = yValueUnderCursor - ySqSize * (1 - yPercent);
-            double yMax = yValueUnderCursor + ySqSize * yPercent;
-            
-            if (Double.isNaN(xMin) || Double.isNaN(xMax) || Double.isNaN(yMin) || Double.isNaN(yMax))
-            {
+            double rotation = e.getPreciseWheelRotation();
+            int width = chart.getXChartEnd() - chart.getXChartStart();
+            int height = chart.getYChartStart() - chart.getYChartEnd();
+            if (rotation == 0 || width <= 0 || height <= 0)
                 return;
+
+            // Shift selects X, Ctrl selects Y; neither or both selects both.
+            boolean zoomX = !e.isControlDown() || e.isShiftDown();
+            boolean zoomY = !e.isShiftDown() || e.isControlDown();
+            double factor = Math.pow(1.2, rotation);
+            double xFraction = (e.getX() - chart.getXChartStart()) / (double)width;
+            double yFraction = (chart.getYChartStart() - e.getY()) / (double)height;
+
+            boolean changed = false;
+            if (zoomX && zoomAxis(chart.getAxisX(), e.getX(), xFraction, factor)) {
+                chart.setVariableWidthXAxisFormat();
+                changed = true;
             }
-            
-            chart.zoom(xMin, xMax, yMin, yMax);
-            
-            
-            
-            // also zoom right hand Y axes
-            
-            for (int i = 0; i < rightYAxis.size(); i++)
-            {
-                AAxis axis = rightYAxis.get(i);
-                
-                double axisRange = axis.getMax() - axis.getMin();
-                double sqSize =axisRange * zoomFactor;
-                double underCursor = axis.translatePxToValue(e.getY());
-                
-                double minVal = underCursor - sqSize * (1 - yPercent);
-                double maxVal = underCursor + sqSize * yPercent;
-                
-                zoom(axis, axis.translateValueToPx(minVal), axis.translateValueToPx(maxVal));
-                
+            if (zoomY) {
+                changed |= zoomAxis(chart.getAxisY(), e.getY(), yFraction, factor);
+                for (AAxis<?> axis : chart.rightYAxis)
+                    changed |= zoomAxis(axis, e.getY(), yFraction, factor);
             }
-            
-            setVariableWidthXAxisFormat();
-            
-            
-            
+            if (changed) {
+                chart.repaint();
+                e.consume();
+            }
         }
     }
     

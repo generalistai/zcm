@@ -4,10 +4,10 @@ import javax.swing.*;
 import javax.swing.table.*;
 import java.awt.*;
 import java.awt.event.*;
-import java.awt.geom.AffineTransform;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import zcm.util.*;
 import java.lang.reflect.*;
 
@@ -32,6 +32,23 @@ public class Spy
     ArrayList<SpyPlugin> plugins = new ArrayList<SpyPlugin>();
 
     JButton clearButton = new JButton("Clear");
+    private final AtomicBoolean tableRefreshPending = new AtomicBoolean();
+
+    private void refreshChannelTable()
+    {
+        if (tableRefreshPending.compareAndSet(false, true)) {
+            SwingUtilities.invokeLater(new Runnable() {
+                public void run()
+                {
+                    tableRefreshPending.set(false);
+                    int row = channelTable.getSelectedRow();
+                    _channelTableModel.fireTableDataChanged();
+                    if (row >= 0 && row < channelTable.getRowCount())
+                        channelTable.setRowSelectionInterval(row, row);
+                }
+            });
+        }
+    }
 
     public Spy(String zcmurl, WindowTitleOptions titleOptions) throws IOException
     {
@@ -62,6 +79,8 @@ public class Spy
         tcm.getColumn(6).setMaxWidth(100);
 
         JFrame jif = new JFrame(title);
+        SpyIcons.window(jif);
+        SpyIcons.decorate(clearButton, SpyIcons.Symbol.CLEAR);
         jif.setLayout(new BorderLayout());
         jif.add(channelTable.getTableHeader(), BorderLayout.PAGE_START);
         // XXX weird bug, if clearButton is added after JScrollPane, we get an error.
@@ -69,15 +88,12 @@ public class Spy
         jif.add(new JScrollPane(channelTable), BorderLayout.CENTER);
 
         chartData = new ChartData(utime_now());
-
-        // if (isHiDpi()) {
-        //     System.out.println("HiDPI detected, setting UI scale to 2.0");
-        //     System.setProperty("sun.java2d.uiScale", "2.0");
-        // } else {
-        //     System.out.println("HiDPI not detected, not setting UI scale");
-        // }
-         //Float.toString(scaleFactor));
-        // SwingDPI.scaleFactor = scaleFeactor;
+        chartData.signalSource = new SignalCatalog.Source() {
+            public java.util.List<ChannelData> channels() {
+                synchronized (channelList) { return new ArrayList<ChannelData>(channelList); }
+            }
+            public ObjectPanel inspector(ChannelData channel) { return viewerFor(channel); }
+        };
 
         jif.setSize(800,600);
         jif.setLocationByPlatform(true);
@@ -184,6 +200,7 @@ public class Spy
                 // plugin by calling its actionPerformed method
 
                 JFrame pluginFrame = new JFrame(cd.name);
+                SpyIcons.window(pluginFrame);
                 pluginFrame.setLayout(new BorderLayout());
                 JDesktopPane pluginJdp = new JDesktopPane();
                 pluginFrame.add(pluginJdp);
@@ -216,19 +233,24 @@ public class Spy
         }
     }
 
+    ObjectPanel viewerFor(ChannelData cd)
+    {
+        if (cd.viewer == null) {
+            ObjectPanel viewer = new ObjectPanel(cd.name, chartData);
+            viewer.setObject(cd.last, cd.last_utime);
+            cd.viewer = viewer;
+        }
+        return cd.viewer;
+    }
+
     void createViewer(ChannelData cd)
     {
 
-        if (cd.viewerFrame != null && !cd.viewerFrame.isVisible())
-        {
-            cd.viewerFrame.dispose();
-            cd.viewer = null;
-        }
-
-        if (cd.viewer == null) {
+        if (cd.viewerFrame == null) {
             cd.viewerFrame = new JFrame(cd.name);
+            SpyIcons.window(cd.viewerFrame);
 
-            cd.viewer = new ObjectPanel(cd.name, chartData);
+            viewerFor(cd);
 
             //    cd.viewer = new ObjectViewer(cd.name, cd.cls, null);
             cd.viewerFrame.setLayout(new BorderLayout());
@@ -244,8 +266,6 @@ public class Spy
             
             cd.viewerFrame.add(viewerScrollPane, BorderLayout.CENTER);
             
-            cd.viewer.setObject(cd.last, cd.last_utime);
-
             //jdp.add(cd.viewerFrame);
 
             cd.viewerFrame.setSize(650,400);
@@ -362,7 +382,7 @@ public class Spy
                     synchronized(channelList) {
                         channelMap.put(channel, cd);
                         channelList.add(cd);
-                        _channelTableModel.fireTableDataChanged();
+                        refreshChannelTable();
                     }
 
                 } else {
@@ -381,7 +401,13 @@ public class Spy
 
                 cd.nreceived++;
 
-                o = cd.cls.getConstructor(ZCMDataInputStream.class).newInstance(dins);
+                if (cd.cls == null) {
+                    cd.nerrors++;
+                    return;
+                }
+                if (cd.decoder == null)
+                    cd.decoder = cd.cls.getConstructor(ZCMDataInputStream.class);
+                o = cd.decoder.newInstance(dins);
                 cd.last = o;
 
                 if (cd.viewer != null)
@@ -448,10 +474,7 @@ public class Spy
                     }
                 }
 
-                int selrow = channelTable.getSelectedRow();
-                channelTableModel.fireTableDataChanged();
-                if (selrow >= 0)
-                    channelTable.setRowSelectionInterval(selrow, selrow);
+                refreshChannelTable();
 
                 try {
                     Thread.sleep(1000);
@@ -544,42 +567,10 @@ public class Spy
         boolean showURL = false;
     }
 
-    private static int getScreenDPI() {
-        // A bit of a hack to detect screen DPI.  If you do this through Java, it's already too late to set the uiScale property.
-        try {
-            // Execute the command through a shell
-            String[] cmd = {"/bin/sh", "-c", "xdpyinfo | grep resolution | awk '{print $2}'"};
-            Process process = Runtime.getRuntime().exec(cmd);
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            BufferedReader errorReader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String[] dpiValues = line.split("x");
-                int dpiX = Integer.parseInt(dpiValues[0]);
-                int dpiY = Integer.parseInt(dpiValues[1]);
-                return (dpiX + dpiY) / 2; // Average the DPI values
-            }
-            // Print any errors from the command execution
-            while ((line = errorReader.readLine()) != null) {
-                System.err.println("Error: " + line);
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        // Default DPI if unable to fetch
-        return 96;
-    }
-    
     public static void main(String args[])
     {
-        int screenDpi = getScreenDPI();
-        System.out.println("Screen DPI: " + screenDpi);
-        if (screenDpi == 144) {
-            System.setProperty("sun.java2d.uiScale", "2.0");
-        }
-        // System.out.println(Double.toString(Math.round(getScreenDPI() / 96.0)));
-        // System.out.println(Double.toString(Math.round(148.0 / 96.0)));
-        // System.setProperty("sun.java2d.uiScale", "1.5");//Double.toString(Math.round(getScreenDPI() / 96.0)));
+        // Must run before constructing any Swing components or querying AWT.
+        SpyUiScale.configure();
 
         // check if the JRE is supplied by gcj, and warn the user if it is.
         if(System.getProperty("java.vendor").indexOf("Free Software Foundation") >= 0) {
