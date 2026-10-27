@@ -13,11 +13,15 @@
 #include <signal.h>
 #include <string>
 #include <map>
+#include <limits>
+#include <algorithm>
 
 #include <errno.h>
 #include <time.h>
 #include <getopt.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/uio.h>
 
 #include "zcm/zcm-cpp.hpp"
 #include "zcm/util/debug.h"
@@ -160,6 +164,9 @@ struct Args
     int    control_fd         = -1;
     uint64_t control_session_id = 0;
     bool   control_enabled    = false;
+    int    metadata_fd        = -1;
+    regex  metadata_channel{"a^"};
+    vector<uint64_t> metadata_fingerprints;
     map<string, string> channel_renames;
 
 
@@ -172,6 +179,9 @@ struct Args
         enum LongOnlyOption {
             CONTROL_FD = 1000,
             CONTROL_SESSION_ID,
+            METADATA_FD,
+            METADATA_CHANNEL,
+            METADATA_FINGERPRINT,
         };
         struct option long_opts[] = {
             { "help",              no_argument,       0, 'h' },
@@ -192,6 +202,9 @@ struct Args
             { "rename-channel",    required_argument, 0, 'R' },
             { "control-fd",        required_argument, 0, CONTROL_FD },
             { "control-session-id", required_argument, 0, CONTROL_SESSION_ID },
+            { "metadata-fd",       required_argument, 0, METADATA_FD },
+            { "metadata-channel",  required_argument, 0, METADATA_CHANNEL },
+            { "metadata-fingerprint", required_argument, 0, METADATA_FINGERPRINT },
 
             { 0, 0, 0, 0 }
         };
@@ -322,6 +335,30 @@ struct Args
                     control_session_id = static_cast<uint64_t>(parsed_value);
                     saw_control_session_id = true;
                 } break;
+                case METADATA_FD: {
+                    char* end = nullptr;
+                    long value = strtol(optarg, &end, 10);
+                    if (!*optarg || *end || value < 0 || value > numeric_limits<int>::max()) {
+                        cerr << "Invalid metadata fd" << endl;
+                        return false;
+                    }
+                    metadata_fd = static_cast<int>(value);
+                } break;
+                case METADATA_CHANNEL:
+                    try { metadata_channel = regex(optarg); }
+                    catch (const regex_error&) {
+                        cerr << "Invalid metadata channel regex" << endl;
+                        return false;
+                    }
+                    break;
+                case METADATA_FINGERPRINT: {
+                    string value(optarg);
+                    if (value.size() != 16 || value.find_first_not_of("0123456789abcdefABCDEF") != string::npos) {
+                        cerr << "Metadata fingerprint must be 16 hexadecimal digits" << endl;
+                        return false;
+                    }
+                    metadata_fingerprints.push_back(strtoull(optarg, nullptr, 16));
+                } break;
 
                 case 'h': default: usage(); return false;
             };
@@ -367,6 +404,16 @@ struct Args
             return false;
         }
         control_enabled = saw_control_fd;
+
+        if (metadata_fd >= 0) {
+            int type = 0;
+            socklen_t length = sizeof(type);
+            if (getsockopt(metadata_fd, SOL_SOCKET, SO_TYPE, &type, &length) != 0 ||
+                type != SOCK_SEQPACKET || metadata_fd == control_fd) {
+                cerr << "Metadata fd must be a separate SOCK_SEQPACKET socket" << endl;
+                return false;
+            }
+        }
 
         return true;
     }
@@ -436,6 +483,9 @@ struct Args
              << "                             with a program like Procman." << endl
              << "      --control-fd=FD        Write machine-readable control replies to FD." << endl
              << "      --control-session-id=N Identify the active control session for replies." << endl
+             << "      --metadata-fd=FD       Stream exact written metadata to a SOCK_SEQPACKET fd." << endl
+             << "      --metadata-channel=RE Select metadata channels with a full regex match." << endl
+             << "      --metadata-fingerprint=HEX Also select this 16-digit payload fingerprint." << endl
              << endl
              << "Rotating / splitting log files" << endl
              << "==============================" << endl
@@ -487,6 +537,12 @@ struct Logger
     u64    time0                    = TimeUtil::utime();
     u64    last_fflush_time         = 0;
 
+    uint64_t metadata_file_id = 0;
+    uint64_t metadata_events = 0, metadata_selected = 0, metadata_bytes = 0;
+    int64_t metadata_first = 0, metadata_last = 0;
+    bool metadata_valid = false;
+    map<string, uint64_t> metadata_counts;
+
     size_t dropped_packets_count    = 0;
     u64    last_drop_report_utime   = 0;
     size_t last_drop_report_count   = 0;
@@ -523,7 +579,7 @@ struct Logger
             }
         }
 
-        if (log) { log->close(); delete log; }
+        closeLogfile();
 
         while (!q.empty()) {
             delete[] q.front()->data;
@@ -579,6 +635,103 @@ struct Logger
         if (args.debug) return true;
 
         return true;
+    }
+
+    // LGMD v1 packets: >4sHHIQ (magic, version, kind, packet bytes, file id).
+    // OPEN(1): UTF-8 path. EVENT(2): standard ZCM record framing and payload.
+    // CLOSE(3): >IQQQqqI (valid, events, selected, bytes, first, max, channels),
+    // followed by channel entries (>I name bytes, UTF-8 name, >Q count).
+    // Packet loss invalidates this file. Never block the recording writer or
+    // retain a second queue when the metadata consumer falls behind.
+    void sendMetadata(uint16_t kind, const vector<uint8_t>& body,
+                      const void* payload = nullptr, size_t payload_size = 0)
+    {
+        if (args.metadata_fd < 0) return;
+        size_t size = 20 + body.size() + payload_size;
+        if (size > numeric_limits<uint32_t>::max()) {
+            metadata_valid = false;
+            return;
+        }
+        vector<uint8_t> header{'L', 'G', 'M', 'D'};
+        append_u16_be(header, 1);
+        append_u16_be(header, kind);
+        append_u32_be(header, static_cast<uint32_t>(size));
+        append_u64_be(header, metadata_file_id);
+        iovec parts[] = {
+            {header.data(), header.size()},
+            {const_cast<uint8_t*>(body.data()), body.size()},
+            {const_cast<void*>(payload), payload_size},
+        };
+        msghdr message{};
+        message.msg_iov = parts;
+        message.msg_iovlen = payload_size ? 3 : 2;
+        ssize_t sent = sendmsg(args.metadata_fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (sent < 0 || static_cast<size_t>(sent) != size) {
+            if (metadata_valid)
+                cerr << "Metadata capture incomplete for " << filename
+                     << ": " << (sent < 0 ? strerror(errno) : "short packet") << endl;
+            metadata_valid = false;
+        }
+    }
+
+    void recordMetadata(const zcm::LogEvent* event)
+    {
+        if (args.metadata_fd < 0) return;
+        uint64_t ordinal = metadata_events++;
+        if (ordinal == 0) metadata_first = metadata_last = event->timestamp;
+        metadata_last = max(metadata_last, event->timestamp);
+        metadata_bytes += 28 + event->channel.size() + event->datalen;
+        metadata_counts[event->channel]++;
+        bool selected = regex_match(event->channel, args.metadata_channel);
+        if (event->datalen >= 8) {
+            uint64_t fingerprint = read_u64_be(event->data);
+            for (uint64_t wanted : args.metadata_fingerprints)
+                selected |= fingerprint == wanted;
+        }
+        if (!selected) return;
+        metadata_selected++;
+        if (!metadata_valid) return;
+        vector<uint8_t> body;
+        append_u32_be(body, 0xEDA1DA01);
+        append_u64_be(body, ordinal);
+        append_u64_be(body, static_cast<uint64_t>(event->timestamp));
+        append_u32_be(body, event->channel.size());
+        append_u32_be(body, event->datalen);
+        body.insert(body.end(), event->channel.begin(), event->channel.end());
+        sendMetadata(2, body, event->data, event->datalen);
+    }
+
+    void closeLogfile()
+    {
+        if (!log) return;
+        if (args.metadata_fd >= 0) {
+            FILE* file = log->getFilePtr();
+            struct stat status{};
+            // writeEvent only confirms buffered writes. A usable capture must
+            // also describe a completely flushed, correctly sized file.
+            if (::fflush(file) != 0 || fdatasync(fileno(file)) != 0 ||
+                ferror(file) || fstat(fileno(file), &status) != 0 ||
+                status.st_size < 0 || static_cast<uint64_t>(status.st_size) != metadata_bytes)
+                metadata_valid = false;
+        }
+        log->close();
+        delete log;
+        log = nullptr;
+        if (args.metadata_fd < 0) return;
+        vector<uint8_t> body;
+        append_u32_be(body, metadata_valid ? 1 : 0);
+        append_u64_be(body, metadata_events);
+        append_u64_be(body, metadata_selected);
+        append_u64_be(body, metadata_bytes);
+        append_u64_be(body, static_cast<uint64_t>(metadata_first));
+        append_u64_be(body, static_cast<uint64_t>(metadata_last));
+        append_u32_be(body, metadata_counts.size());
+        for (const auto& entry : metadata_counts) {
+            append_u32_be(body, entry.first.size());
+            body.insert(body.end(), entry.first.begin(), entry.first.end());
+            append_u64_be(body, entry.second);
+        }
+        sendMetadata(3, body);
     }
 
     bool sendControlFrame(const vector<uint8_t>& frame)
@@ -860,7 +1013,16 @@ struct Logger
         if (!log->good()) {
             perror("Error: fopen failed");
             delete log;
+            log = nullptr;
             return false;
+        }
+        if (args.metadata_fd >= 0) {
+            metadata_file_id++;
+            metadata_events = metadata_selected = metadata_bytes = 0;
+            metadata_first = metadata_last = 0;
+            metadata_counts.clear();
+            metadata_valid = true;
+            sendMetadata(1, vector<uint8_t>(filename.begin(), filename.end()));
         }
         return true;
     }
@@ -984,6 +1146,7 @@ struct Logger
                  << " queue_remaining=" << qSize << endl;
 
             if (log->writeEvent(le) != 0) {
+                metadata_valid = false;
                 static u64 last_spew_utime = 0;
                 string reason = strerror(errno);
                 u64 now = TimeUtil::utime();
@@ -1003,6 +1166,7 @@ struct Logger
                 delete le;
                 return;
             }
+            recordMetadata(le);
 
             cout << ORDERED_CYCLE_DEBUG_PREFIX
                  << " wrote barrier marker to old log chunk session="
@@ -1015,7 +1179,7 @@ struct Logger
             logsize += 4 + 8 + 8 + 4 + le->channel.size() + 4 + le->datalen;
 
             string old_file = filename;
-            log->close();
+            closeLogfile();
             if (args.rotate > 0)
                 rotate_logfiles();
             if (!openLogfile()) {
@@ -1063,7 +1227,7 @@ struct Logger
             double logsize_mb = (double)logsize / (1 << 20);
             if (logsize_mb > args.auto_split_mb) {
                 // Yes.  open up a new log file
-                log->close();
+                closeLogfile();
                 if (args.rotate > 0)
                     rotate_logfiles();
                 if (!openLogfile()) exit(1);
@@ -1075,7 +1239,7 @@ struct Logger
 
         // Did we get a SIGHUP and the user wants a new logfile?
         if (got_sighup) {
-            log->close();
+            closeLogfile();
             if (args.rotate > 0)
                 rotate_logfiles();
             if (!openLogfile()) exit(1);
@@ -1087,6 +1251,7 @@ struct Logger
         }
 
         if (log->writeEvent(le) != 0) {
+            metadata_valid = false;
             static u64 last_spew_utime = 0;
             string reason = strerror(errno);
             u64 now = TimeUtil::utime();
@@ -1101,6 +1266,7 @@ struct Logger
             delete le;
             return;
         }
+        recordMetadata(le);
 
         // XXX (Bendes): asan reported unsigned integer overflow here
         if (args.fflush_interval_ms >= 0 &&
