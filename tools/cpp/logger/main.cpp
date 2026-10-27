@@ -166,6 +166,7 @@ struct Args
     bool   control_enabled    = false;
     int    metadata_fd        = -1;
     regex  metadata_channel{"a^"};
+    regex  metadata_presence_channel{"a^"};
     vector<uint64_t> metadata_fingerprints;
     map<string, string> channel_renames;
 
@@ -181,6 +182,7 @@ struct Args
             CONTROL_SESSION_ID,
             METADATA_FD,
             METADATA_CHANNEL,
+            METADATA_PRESENCE_CHANNEL,
             METADATA_FINGERPRINT,
         };
         struct option long_opts[] = {
@@ -204,6 +206,7 @@ struct Args
             { "control-session-id", required_argument, 0, CONTROL_SESSION_ID },
             { "metadata-fd",       required_argument, 0, METADATA_FD },
             { "metadata-channel",  required_argument, 0, METADATA_CHANNEL },
+            { "metadata-presence-channel", required_argument, 0, METADATA_PRESENCE_CHANNEL },
             { "metadata-fingerprint", required_argument, 0, METADATA_FINGERPRINT },
 
             { 0, 0, 0, 0 }
@@ -351,6 +354,13 @@ struct Args
                         return false;
                     }
                     break;
+                case METADATA_PRESENCE_CHANNEL:
+                    try { metadata_presence_channel = regex(optarg); }
+                    catch (const regex_error&) {
+                        cerr << "Invalid metadata presence channel regex" << endl;
+                        return false;
+                    }
+                    break;
                 case METADATA_FINGERPRINT: {
                     string value(optarg);
                     if (value.size() != 16 || value.find_first_not_of("0123456789abcdefABCDEF") != string::npos) {
@@ -485,6 +495,7 @@ struct Args
              << "      --control-session-id=N Identify the active control session for replies." << endl
              << "      --metadata-fd=FD       Stream exact written metadata to a SOCK_SEQPACKET fd." << endl
              << "      --metadata-channel=RE Select metadata channels with a full regex match." << endl
+             << "      --metadata-presence-channel=RE Acknowledge channels once, without payloads." << endl
              << "      --metadata-fingerprint=HEX Also select this 16-digit payload fingerprint." << endl
              << endl
              << "Rotating / splitting log files" << endl
@@ -641,6 +652,7 @@ struct Logger
     // OPEN(1): UTF-8 path. EVENT(2): standard ZCM record framing and payload.
     // CLOSE(3): >IQQQqqI (valid, events, selected, bytes, first, max, channels),
     // followed by channel entries (>I name bytes, UTF-8 name, >Q count).
+    // PRESENCE(4): UTF-8 channel, once per file; included in the selected count.
     // Packet loss invalidates this file. Never block the recording writer or
     // retain a second queue when the metadata consumer falls behind.
     void sendMetadata(uint16_t kind, const vector<uint8_t>& body,
@@ -688,7 +700,14 @@ struct Logger
             for (uint64_t wanted : args.metadata_fingerprints)
                 selected |= fingerprint == wanted;
         }
-        if (!selected) return;
+        if (!selected) {
+            if (metadata_counts[event->channel] != 1 ||
+                !regex_match(event->channel, args.metadata_presence_channel)) return;
+            metadata_selected++;
+            if (metadata_valid)
+                sendMetadata(4, vector<uint8_t>(event->channel.begin(), event->channel.end()));
+            return;
+        }
         metadata_selected++;
         if (!metadata_valid) return;
         vector<uint8_t> body;
