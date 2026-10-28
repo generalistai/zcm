@@ -4,6 +4,7 @@
 #include "zcm/transport.h"
 #include "zcm/zcm_coretypes.h"
 #include "zcm/util/threadsafe_queue.hpp"
+#include "zcm/util/message_buffer_pool.hpp"
 #include "zcm/util/topology.hpp"
 
 #include "util/TimeUtil.hpp"
@@ -44,26 +45,25 @@ struct Msg
 {
     zcm_msg_t msg;
 
-    // NOTE: copy the provided data into this object
-    Msg(uint64_t utime, const char* channel, size_t len, const uint8_t* buf)
+    // The lease survives until the queue pops this message, including while a
+    // transport or subscriber is reading it. Its storage is then reusable.
+    Msg(MessageBufferPool& pool, uint64_t utime, const char* channel,
+        size_t len, const uint8_t* buf) : pool(&pool)
     {
+        auto owned = pool.acquire(len);
+        owned->channel.assign(channel);
+        if (len) memcpy(owned->payload.data(), buf, len);
         msg.utime = utime;
-        msg.channel = strdup(channel);
+        msg.channel = owned->channel.c_str();
         msg.len = len;
-        msg.buf = (uint8_t*)malloc(len);
-        memcpy(msg.buf, buf, len);
+        msg.buf = owned->payload.data();
+        buffer = owned.release();
     }
 
-    Msg(zcm_msg_t* msg) : Msg(msg->utime, msg->channel, msg->len, msg->buf) {}
+    Msg(MessageBufferPool& pool, zcm_msg_t* msg)
+        : Msg(pool, msg->utime, msg->channel, msg->len, msg->buf) {}
 
-    ~Msg()
-    {
-        if (msg.channel)
-            free((void*)msg.channel);
-        if (msg.buf)
-            free((void*)msg.buf);
-        memset(&msg, 0, sizeof(msg));
-    }
+    ~Msg() { pool->release(unique_ptr<MessageBufferPool::Buffer>(buffer)); }
 
     zcm_msg_t* get()
     {
@@ -71,6 +71,9 @@ struct Msg
     }
 
   private:
+    MessageBufferPool* pool;
+    MessageBufferPool::Buffer* buffer;
+
     // Disable all copying and moving
     Msg(const Msg& other) = delete;
     Msg(Msg&& other) = delete;
@@ -114,7 +117,7 @@ struct zcm_blocking
     void pause();
     void resume();
 
-    int publish(const string& channel, const uint8_t* data, uint32_t len);
+    int publish(const char* channel, const uint8_t* data, uint32_t len);
     zcm_sub_t* subscribe(const string& channel, zcm_msg_handler_t cb, void* usr, bool block);
     int unsubscribe(zcm_sub_t* sub, bool block);
     int flush(bool block);
@@ -159,6 +162,9 @@ struct zcm_blocking
     mutex subRecvMutex;
 
     static constexpr size_t QUEUE_SIZE = 16;
+    // Pools outlive the queues, whose destructors return outstanding leases.
+    MessageBufferPool sendBuffers;
+    MessageBufferPool recvBuffers;
     ThreadsafeQueue<Msg> sendQueue {QUEUE_SIZE};
     ThreadsafeQueue<Msg> recvQueue {QUEUE_SIZE};
 
@@ -421,11 +427,11 @@ void zcm_blocking_t::resume()
     hndlPauseCond.notify_all();
 }
 
-int zcm_blocking_t::publish(const string& channel, const uint8_t* data, uint32_t len)
+int zcm_blocking_t::publish(const char* channel, const uint8_t* data, uint32_t len)
 {
     // Check the validity of the request
     if (len > mtu) return ZCM_EINVALID;
-    if (channel.size() > ZCM_CHANNEL_MAXLEN) return ZCM_EINVALID;
+    if (strlen(channel) > ZCM_CHANNEL_MAXLEN) return ZCM_EINVALID;
 
     // If needed: spawn the send thread
     {
@@ -436,7 +442,7 @@ int zcm_blocking_t::publish(const string& channel, const uint8_t* data, uint32_t
         }
     }
 
-    bool success = sendQueue.pushIfRoom(TimeUtil::utime(), channel.c_str(), len, data);
+    bool success = sendQueue.pushIfRoom(sendBuffers, TimeUtil::utime(), channel, len, data);
     if (!success) {
         ZCM_DEBUG("sendQueue has no free space");
         return ZCM_EAGAIN;
@@ -644,6 +650,10 @@ void zcm_blocking_t::recvThreadFunc()
     // Name the recv thread
     SET_THREAD_NAME("ZeroCM_receiver");
 
+    // ipcshm also delivers unsubscribed channels. Reuse lookup storage instead
+    // of constructing an owning string for every message on the bus.
+    string channel;
+    channel.reserve(ZCM_CHANNEL_MAXLEN);
     while (true) {
         {
             unique_lock<mutex> lk(recvStateMutex);
@@ -656,7 +666,8 @@ void zcm_blocking_t::recvThreadFunc()
                 unique_lock<mutex> lk(subRecvMutex);
 
                 // Check if message matches a non regex channel
-                auto it = subs.find(msg.channel);
+                channel.assign(msg.channel);
+                auto it = subs.find(channel);
                 if (it == subs.end()) {
                     // Check if message matches a regex channel
                     bool foundRegex = false;
@@ -678,7 +689,7 @@ void zcm_blocking_t::recvThreadFunc()
             // Note: After this returns, you have either successfully pushed a message
             //       into the queue, or the queue was disabled and you will quit out of
             //       this loop when you re-check the running condition
-            recvQueue.push(&msg);
+            recvQueue.push(recvBuffers, &msg);
         }
     }
     unique_lock<mutex> lk(recvStateMutex);
