@@ -1,0 +1,22 @@
+name: Native bridge
+on: [pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tool build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libelf-dev
+      - name: Build native tools
+        run: |
+          python3 ./waf configure --use-ipcshm --use-elf
+          python3 ./waf build -j2 --targets=zcm-bridge

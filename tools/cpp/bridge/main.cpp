@@ -12,6 +12,12 @@
 #include <getopt.h>
 
 #include "zcm/zcm-cpp.hpp"
+#ifdef ZCM_BRIDGE_TRANSPORT_HEADER
+#include ZCM_BRIDGE_TRANSPORT_HEADER
+#endif
+#ifndef ZCM_BRIDGE_TRANSPORT_TYPE
+#define ZCM_BRIDGE_TRANSPORT_TYPE zcm::ZCM
+#endif
 #include "zcm/zcm_coretypes.h"
 
 #include "util/TranscoderPluginDb.hpp"
@@ -303,7 +309,7 @@ struct Bridge
             return false;
 
         // A endpoint network
-        zcmA = new zcm::ZCM(args.Aurl);
+        zcmA = new ZCM_BRIDGE_TRANSPORT_TYPE(args.Aurl);
         if (!zcmA->good()) {
             cerr << "Couldn't initialize A endpoint ZCM network! "
                  << "Please check your A endpoint transport url: "
@@ -315,7 +321,7 @@ struct Bridge
         }
 
         // B endpoint network
-        zcmB = new zcm::ZCM(args.Burl);
+        zcmB = new ZCM_BRIDGE_TRANSPORT_TYPE(args.Burl);
         if (!zcmB->good()) {
             cerr << "Couldn't initialize B endpoint ZCM network! "
                  << "Please check your B endpoint transport url: "
@@ -346,6 +352,10 @@ struct Bridge
 
     static void handler(const zcm::ReceiveBuffer* rbuf, const string& channel, void* usr)
     {
+        // A transport adapter may dispatch from multiple buses. Serialize
+        // callback state (decimation, plugins and watchdog updates).
+        static mutex callbackLock;
+        lock_guard<mutex> lock(callbackLock);
         BridgeInfo* info = (BridgeInfo*)usr;
 
         // Feed the watchdog
@@ -429,10 +439,9 @@ struct Bridge
 
         while (!done) usleep(1e6);
 
-        wd.reset();
-
         zcmA->stop();
         zcmB->stop();
+        wd.reset();
 
         zcmA->flush();
         zcmB->flush();
