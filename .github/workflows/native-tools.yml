@@ -1,4 +1,4 @@
-name: Native recorder and bridge
+name: Native recorder
 on: [pull_request, workflow_dispatch]
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
       - name: Build native tools
         run: |
           python3 ./waf configure --use-ipcshm --use-elf
-          python3 ./waf build -j2 --targets=zcm-logger,zcm-bridge
+          python3 ./waf build -j2 --targets=zcm-logger
       - name: Check accepted events survive shutdown
         run: |
           g++ -std=c++11 -O2 -pthread -I . -I tools/cpp test/cpp/logger_shutdown_test.cpp \
