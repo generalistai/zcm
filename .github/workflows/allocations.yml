@@ -1,0 +1,28 @@
+name: Blocking transport allocations
+on:
+  pull_request:
+    branches: [generalistai-main, ubuntu22-main]
+  push:
+    branches: [generalistai-main, ubuntu22-main]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build library and allocation regression
+        run: |
+          python3 ./waf configure --use-ipcshm --use-udp
+          python3 ./waf build -j2 --targets=zcm
+          g++ -std=c++11 -O2 -pthread -I . test/cpp/allocation_test.cpp \
+            -L build/zcm -Wl,-rpath,"$PWD/build/zcm" -lzcm -o build/allocation_test
+      - name: Check allocation reuse and asynchronous ownership
+        run: build/allocation_test
