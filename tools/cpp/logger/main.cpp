@@ -984,7 +984,8 @@ struct Logger
                 if (done) return;
                 newEventCond.wait(lock);
             }
-            // Shutdown still drains events accepted before receivers stopped.
+            if (done) return;
+
             le = q.front();
             q.pop();
             qSize = q.size();
@@ -1241,9 +1242,6 @@ int main(int argc, char *argv[])
         z->stop();
         z->flush();
     }
-
-    // No producers remain; drain events already accepted before shutdown.
-    while (!logger.q.empty()) logger.flushWhenReady();
 
     cerr << "Logger exiting" << endl;
 
