@@ -445,6 +445,8 @@ struct Args
              << "                             problems during replay, like when using ZCM to launch processes" << endl
              << "                             with a program like Procman." << endl
              << "      --control-all-shards   Fence every input bus before cycling." << endl
+             << "                             Send the same request on each input; its channel filter" << endl
+             << "                             must include logger_control_v1. Missing inputs delay cycling." << endl
              << "      --control-fd=FD        Write machine-readable control replies to FD." << endl
              << "      --control-session-id=N Identify the active control session for replies." << endl
              << endl
@@ -758,8 +760,8 @@ struct Logger
                     for (bool seen : cycle_shards_seen) if (!seen) return;
                     collecting_cycle_valid = false;
                 }
-                // Every shard has enqueued all messages preceding its fence.
-                // Cross-bus arrival order is deliberately not reconstructed.
+                // In all-shard mode, each input has enqueued its pre-fence events.
+                // Later events from earlier inputs may also precede this barrier.
                 zcm::LogEvent* barrier = new zcm::LogEvent;
                 barrier->eventnum = INTERNAL_BARRIER_EVENTNUM;
                 barrier->timestamp = rbuf->recv_utime;

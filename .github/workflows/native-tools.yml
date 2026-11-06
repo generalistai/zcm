@@ -27,3 +27,10 @@ jobs:
             -Wl,-rpath,"$PWD/build/zcm:$PWD/build/tools/cpp/util" \
             -lzcm -lzcm_tools_util -lelf -ldl -o build/logger_shutdown_test
           timeout 10 build/logger_shutdown_test -f "$RUNNER_TEMP/shutdown.zcm"
+      - name: Check multi-input cycles and legacy behavior
+        run: |
+          g++ -std=c++11 -O2 -pthread -I . -I tools/cpp test/cpp/logger_cycle_test.cpp \
+            -L build/zcm -L build/tools/cpp/util \
+            -Wl,-rpath,"$PWD/build/zcm:$PWD/build/tools/cpp/util" \
+            -lzcm -lzcm_tools_util -lelf -ldl -o build/logger_cycle_test
+          timeout 10 build/logger_cycle_test "$RUNNER_TEMP/cycle"
