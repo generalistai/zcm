@@ -1,0 +1,29 @@
+name: Native recorder and bridge
+on: [pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tool build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libelf-dev
+      - name: Build native tools
+        run: |
+          python3 ./waf configure --use-ipcshm --use-elf
+          python3 ./waf build -j2 --targets=zcm-logger,zcm-bridge
+      - name: Check accepted events survive shutdown
+        run: |
+          g++ -std=c++11 -O2 -pthread -I . -I tools/cpp test/cpp/logger_shutdown_test.cpp \
+            -L build/zcm -L build/tools/cpp/util \
+            -Wl,-rpath,"$PWD/build/zcm:$PWD/build/tools/cpp/util" \
+            -lzcm -lzcm_tools_util -lelf -ldl -o build/logger_shutdown_test
+          timeout 10 build/logger_shutdown_test -f "$RUNNER_TEMP/shutdown.zcm"
