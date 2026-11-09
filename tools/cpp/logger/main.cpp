@@ -160,6 +160,7 @@ struct Args
     int    control_fd         = -1;
     uint64_t control_session_id = 0;
     bool   control_enabled    = false;
+    bool   control_all_shards = false;
     map<string, string> channel_renames;
 
 
@@ -172,6 +173,7 @@ struct Args
         enum LongOnlyOption {
             CONTROL_FD = 1000,
             CONTROL_SESSION_ID,
+            CONTROL_ALL_SHARDS,
         };
         struct option long_opts[] = {
             { "help",              no_argument,       0, 'h' },
@@ -190,6 +192,7 @@ struct Args
             { "name",              required_argument, 0, 'n' },
             { "debug",             no_argument,       0, 'd' },
             { "rename-channel",    required_argument, 0, 'R' },
+            { "control-all-shards", no_argument, 0, CONTROL_ALL_SHARDS },
             { "control-fd",        required_argument, 0, CONTROL_FD },
             { "control-session-id", required_argument, 0, CONTROL_SESSION_ID },
 
@@ -302,6 +305,9 @@ struct Args
                     }
                     channel_renames[old_name] = new_name;
                 } break;
+                case CONTROL_ALL_SHARDS:
+                    control_all_shards = true;
+                    break;
                 case CONTROL_FD: {
                     char* eptr = NULL;
                     long parsed_value = strtol(optarg, &eptr, 10);
@@ -367,6 +373,10 @@ struct Args
             return false;
         }
         control_enabled = saw_control_fd;
+        if (control_all_shards && !control_enabled) {
+            cerr << "--control-all-shards requires ordered control" << endl;
+            return false;
+        }
 
         return true;
     }
@@ -434,6 +444,9 @@ struct Args
              << "                             This is helpful for systems where replaying a log can cause" << endl
              << "                             problems during replay, like when using ZCM to launch processes" << endl
              << "                             with a program like Procman." << endl
+             << "      --control-all-shards   Fence every input bus before cycling." << endl
+             << "                             Send the same request on each input; its channel filter" << endl
+             << "                             must include logger_control_v1. Missing inputs delay cycling." << endl
              << "      --control-fd=FD        Write machine-readable control replies to FD." << endl
              << "      --control-session-id=N Identify the active control session for replies." << endl
              << endl
@@ -499,6 +512,10 @@ struct Logger
     condition_variable newEventCond;
 
     queue<zcm::LogEvent*> q;
+    // Protected by lk, just like the common write queue.
+    bool collecting_cycle_valid = false;
+    CycleRequestFrame collecting_cycle;
+    vector<bool> cycle_shards_seen;
     bool pending_cycle_valid = false;
     uint64_t pending_cycle_session_id = 0;
     uint64_t pending_cycle_seq = 0;
@@ -546,9 +563,6 @@ struct Logger
                  << " session=" << args.control_session_id
                  << " file=" << filename << endl;
         }
-
-        if (!sendReady())
-            return false;
 
         shard_plugins.resize(args.shards.size());
 
@@ -679,7 +693,7 @@ struct Logger
         return sendControlFrame(frame);
     }
 
-    void handleCycleRequest(const zcm::ReceiveBuffer* rbuf)
+    void handleCycleRequest(const zcm::ReceiveBuffer* rbuf, size_t shardNum)
     {
         CycleRequestFrame request;
         if (!parseCycleRequestFrame(rbuf->data, rbuf->data_size, &request)) {
@@ -729,7 +743,25 @@ struct Logger
                 resend_complete = true;
                 completed_old_file = completed_cycle_old_file;
                 completed_new_file = completed_cycle_new_file;
+            } else if (collecting_cycle_valid &&
+                       (collecting_cycle.control_session_id != request.control_session_id ||
+                        collecting_cycle.cycle_seq != request.cycle_seq)) {
+                send_busy = true;
+                busy_pending_session_id = collecting_cycle.control_session_id;
+                busy_pending_seq = collecting_cycle.cycle_seq;
             } else {
+                if (args.control_all_shards) {
+                    if (!collecting_cycle_valid) {
+                        collecting_cycle_valid = true;
+                        collecting_cycle = request;
+                        cycle_shards_seen.assign(args.shards.size(), false);
+                    }
+                    cycle_shards_seen.at(shardNum) = true;
+                    for (bool seen : cycle_shards_seen) if (!seen) return;
+                    collecting_cycle_valid = false;
+                }
+                // In all-shard mode, each input has enqueued its pre-fence events.
+                // Later events from earlier inputs may also precede this barrier.
                 zcm::LogEvent* barrier = new zcm::LogEvent;
                 barrier->eventnum = INTERNAL_BARRIER_EVENTNUM;
                 barrier->timestamp = rbuf->recv_utime;
@@ -869,7 +901,7 @@ struct Logger
                  const string& channel, size_t shardNum)
     {
         if (channel == CONTROL_REQUEST_CHANNEL) {
-            handleCycleRequest(rbuf);
+            handleCycleRequest(rbuf, shardNum);
             return;
         }
 
@@ -1200,6 +1232,8 @@ int main(int argc, char *argv[])
 
     ZCM_DEBUG("Starting zcms");
     for (auto& z : zcms) z->start();
+    // READY means every input bus and subscription now exists.
+    if (!logger.sendReady()) return 1;
 
     while (!done) logger.flushWhenReady();
 
